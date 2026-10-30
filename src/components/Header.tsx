@@ -1,5 +1,6 @@
 import { Link, useLocation } from 'react-router-dom';
 import { useCurrentAccount, type CurrentAccount } from '../lib/useCurrentAccount';
+import { SCHOOL_LOGO_SRC } from '../lib/schoolBrand';
 
 export function Header({ account }: { account?: CurrentAccount | null } = {}) {
   return account === undefined ? <ConnectedHeader /> : <HeaderContent account={account} />;
@@ -26,11 +27,11 @@ function HeaderContent({ account }: { account: CurrentAccount | null }) {
         </button>}
         <Link to="/dashboard" aria-label="Suất ăn – Trường Ngôi Sao Hoàng Mai" className="flex min-w-0 items-center gap-2 group rounded focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary">
           {isRegister ? <img
-            src="https://hoangmaistarschool.edu.vn/thongtin/LogoNSHM.png"
+            src={SCHOOL_LOGO_SRC}
             alt="Trường Ngôi Sao Hoàng Mai"
             className="h-8 w-auto max-w-[180px] object-contain shrink-0"
           /> : <>
-            <span className="h-8 w-8 shrink-0 overflow-hidden rounded-md bg-white" aria-hidden="true"><img src="https://hoangmaistarschool.edu.vn/thongtin/LogoNSHM.png" alt="" className="h-8 w-auto max-w-none" /></span>
+            <span className="h-8 w-8 shrink-0 overflow-hidden rounded-md bg-white" aria-hidden="true"><img src={SCHOOL_LOGO_SRC} alt="" className="h-8 w-auto max-w-none" /></span>
             <span className="min-w-0"><span className="block text-[14px] font-bold leading-5 text-on-surface">Suất ăn</span><span className="block truncate text-[10px] leading-4 text-on-surface-variant">{isAdmin ? 'Không gian quản trị' : 'Ngôi Sao Hoàng Mai'}</span></span>
           </>}
         </Link>

@@ -3,13 +3,14 @@ import clsx from 'clsx';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { CurrentAccount } from '../lib/useCurrentAccount';
 import { matchesMenuSearch } from '../lib/adminNavigation';
+import { SCHOOL_LOGO_SRC } from '../lib/schoolBrand';
 
 export type SchoolNavigationLink = { to: string; label: string; icon: string; tone: string; description?: string };
 export type SchoolNavigationGroup = { key: string; label: string; links: SchoolNavigationLink[] };
 
 export function SchoolBrand({ onNavigate }: { onNavigate?: () => void }) {
   return <Link to="/dashboard" onClick={onNavigate} aria-label="Suất ăn – Trường Ngôi Sao Hoàng Mai" className="flex min-w-0 items-center gap-2.5 rounded-lg">
-    <span className="block h-9 w-9 shrink-0 overflow-hidden rounded-lg bg-white" aria-hidden="true"><img src="https://hoangmaistarschool.edu.vn/thongtin/LogoNSHM.png" alt="" className="h-9 w-auto max-w-none" /></span>
+    <span className="block h-9 w-9 shrink-0 overflow-hidden rounded-lg bg-white" aria-hidden="true"><img src={SCHOOL_LOGO_SRC} alt="" className="h-9 w-auto max-w-none" /></span>
     <span className="min-w-0"><span className="block text-[17px] font-bold leading-6 text-on-surface">Suất ăn</span><span className="block text-[10px] leading-4 text-on-surface-variant">Trường Ngôi Sao Hoàng Mai</span></span>
   </Link>;
 }

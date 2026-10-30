@@ -1,8 +1,11 @@
 import { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { signInWithPopup } from 'firebase/auth';
+import { CircleAlert, Utensils } from 'lucide-react';
 import { auth, microsoftProvider } from '../lib/firebase';
 import { recordLoginLog } from '../lib/loginLog';
+import { microsoftLoginErrorMessage } from '../lib/loginErrors';
+import { SCHOOL_CAMPUS_SRC, SCHOOL_LOGO_SRC } from '../lib/schoolBrand';
 import { Footer } from '../components/Footer';
 
 /**
@@ -50,17 +53,8 @@ export default function Login() {
       await recordLoginLog(result.user, 'success');
       // Vẫn đi qua trang khai báo thông tin như cũ, chỉ mang theo trang đích.
       navigate(next ? `/register?next=${encodeURIComponent(next)}` : '/register');
-    } catch (err: any) {
-      console.error(err);
-      if (err.code === 'auth/unauthorized-domain') {
-        setError("Tên miền này chưa được cấp phép trong Firebase Console. Vui lòng kiểm tra mục 'Authorized domains'.");
-      } else if (err.code === 'auth/configuration-not-found') {
-        setError("Chưa cấu hình Microsoft Provider trong Firebase Console.");
-      } else if (err.message?.includes('AADSTS7000215')) {
-        setError("Lỗi Microsoft: ID hoặc Secret của ứng dụng không chính xác. Vui lòng kiểm tra lại cấu hình Azure.");
-      } else {
-        setError(err.message || "Đã xảy ra lỗi khi đăng nhập.");
-      }
+    } catch (err: unknown) {
+      setError(microsoftLoginErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -71,7 +65,7 @@ export default function Login() {
       {/* Khôi phục bố cục gốc: ảnh trường bên trái, khu đăng nhập bên phải. */}
       <div className="relative hidden overflow-hidden bg-[#121a4a] lg:block lg:w-1/2">
         <img
-          src="https://hoangmaistarschool.edu.vn/thongtin/truong.jpg"
+          src={SCHOOL_CAMPUS_SRC}
           alt="Trường Ngôi Sao Hoàng Mai"
           className="absolute inset-0 h-full w-full object-cover"
         />
@@ -79,7 +73,7 @@ export default function Login() {
       <main className="relative z-10 flex min-h-dvh w-full min-w-0 flex-col items-center bg-surface px-4 pt-[max(16px,env(safe-area-inset-top))] pb-[max(12px,env(safe-area-inset-bottom))] shadow-[-20px_0_40px_-10px_rgba(210,18,53,0.1)] sm:px-8 lg:w-1/2">
         <header className="flex w-full shrink-0 justify-center">
           <img
-            src="https://hoangmaistarschool.edu.vn/thongtin/LogoNSHM.png"
+            src={SCHOOL_LOGO_SRC}
             alt="Trường Ngôi Sao Hoàng Mai"
             className="h-[50px] w-auto max-w-full object-contain md:h-[60px]"
           />
@@ -88,7 +82,7 @@ export default function Login() {
           <section aria-labelledby="login-title" aria-busy={loading} className="flex flex-1 flex-col justify-center gap-y-7 py-8 md:gap-y-12 md:py-10">
             <div className="flex flex-col items-center gap-y-3 text-center sm:gap-y-4">
               <div className="mb-1 flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-brand-navy text-white shadow-md md:h-16 md:w-16" aria-hidden="true">
-                <span className="material-symbols-outlined text-[30px]" style={{ fontVariationSettings: "'FILL' 1" }}>restaurant</span>
+                <Utensils className="h-[30px] w-[30px]" aria-hidden="true" />
               </div>
               <div className="min-w-0">
                 <h1 id="login-title" className="mb-xs text-xl font-bold leading-snug uppercase tracking-tight text-brand-navy md:text-headline-md">Hệ thống đăng ký suất ăn</h1>
@@ -102,7 +96,7 @@ export default function Login() {
             <div className="flex min-w-0 flex-col gap-y-4">
               {error && (
                 <div role="alert" className="flex items-start gap-2 rounded-lg border border-error/25 bg-error-container p-3 text-body-md text-on-error-container">
-                  <span className="material-symbols-outlined shrink-0 text-[20px]" aria-hidden="true">error</span>
+                  <CircleAlert className="h-5 w-5 shrink-0" aria-hidden="true" />
                   <span className="min-w-0 break-words [overflow-wrap:anywhere]">{error}</span>
                 </div>
               )}
