@@ -1,7 +1,7 @@
 // SERVER ONLY. No credentials, Firebase admin token or role is sent to Mini App.
 import { createHash } from 'node:crypto';
 import { createAccountLinkService, AccountLinkError } from '../../miniapp/server/account-links.mjs';
-import { verifyZaloIdentity } from '../../miniapp/server/verify-zalo-identity.mjs';
+import { verifyZaloIdentity, ZaloIdentityError } from '../../miniapp/server/verify-zalo-identity.mjs';
 
 const PROJECT = 'dkan-4b061';
 const SCHOOL_EMAIL = /^[A-Za-z0-9][A-Za-z0-9._%+-]{0,63}@hoangmaistarschool\.edu\.vn$/i;
@@ -13,6 +13,21 @@ const unavailable = () => { throw new AccountLinkError(503, 'service_unavailable
 const accountUnavailable = () => { throw new AccountLinkError(403, 'account_unavailable'); };
 const safeText = (value, limit) => typeof value === 'string'
   ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, limit) : '';
+
+/** One fixed log line, with no identity, token, request, body or secret. */
+export function reportZaloVerificationFailure(error, report = console.warn) {
+  if (!(error instanceof ZaloIdentityError)) return;
+  const source = error.diagnostic;
+  const stages = ['transport', 'http', 'provider', 'response', 'timeout'];
+  const diagnostic = { stage: source && stages.includes(source.stage) ? source.stage
+    : error.code === 'invalid_config' ? 'configuration' : error.code === 'invalid_token' ? 'token-input' : 'unknown' };
+  if (source && Number.isSafeInteger(source.providerCode) && source.providerCode >= -99999 && source.providerCode <= 99999)
+    diagnostic.providerCode = source.providerCode;
+  if (source && Number.isInteger(source.httpStatus) && source.httpStatus >= 100 && source.httpStatus <= 599)
+    diagnostic.httpStatus = source.httpStatus;
+  try { report(`DKAN_ZALO_VERIFY_FAILED ${JSON.stringify(diagnostic)}`); }
+  catch { /* Diagnostics must never change authentication or expose the error. */ }
+}
 
 export function sanitizeSchoolProfile(staff, user) {
   return { fullName: safeText(staff?.fullName, 160) || safeText(user?.displayName, 160) || 'CBGV-NV',
@@ -88,7 +103,10 @@ export async function getLiveZaloService(env = process.env) {
         const user = await auth.getUser(decoded.uid);
         return validateSchoolAccount(decoded, user, options);
       },
-      verifyZaloToken: token => verifyZaloIdentity({ accessToken: token, appSecret: config.appSecret }),
+      async verifyZaloToken(token) {
+        try { return await verifyZaloIdentity({ accessToken: token, appSecret: config.appSecret }); }
+        catch (error) { reportZaloVerificationFailure(error); throw error; }
+      },
       async getSchoolProfile(uid) {
         if (!UID.test(uid)) accountUnavailable();
         const user = await auth.getUser(uid);

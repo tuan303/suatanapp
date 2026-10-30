@@ -160,3 +160,69 @@ test('a provider getter that throws private text also fails closed without echoi
   const body = { get id() { throw new Error(`${token} ${secret}`); } };
   await assert.rejects(verifyZaloIdentity(config(async () => response(body))), publicError('verification_failed'));
 });
+
+test('Graph denial carries only its bounded numeric error code and HTTP status', async () => {
+  await assert.rejects(verifyZaloIdentity(config(async () => ({
+    ok: true, status: 200, json: async () => ({ id: userId, error: -1241, message: `${token} ${secret}`, detail: { token } }),
+  }))), error => {
+    publicError('verification_failed')(error);
+    assert.deepEqual(error.diagnostic, { stage: 'provider', providerCode: -1241, httpStatus: 200 });
+    assert.equal(Object.isFrozen(error.diagnostic), true);
+    assert.throws(() => { error.diagnostic.providerCode = -124; }, TypeError);
+    assert.throws(() => { error.diagnostic = { stage: 'transport' }; }, TypeError);
+    return true;
+  });
+});
+
+test('non-success HTTP, network failure and malformed JSON remain distinct without private body reads', async () => {
+  const cases = [
+    [async () => ({ ok: false, status: 403, json: async () => assert.fail('must not read private unsuccessful body') }), { stage: 'http', httpStatus: 403 }],
+    [async () => { throw new Error(`${token} ${secret}`); }, { stage: 'transport' }],
+    [async () => ({ ok: true, status: 200, json: async () => { throw new Error(`${token} ${secret}`); } }), { stage: 'response', httpStatus: 200 }],
+    [async () => ({ ok: true, status: 200, json: async () => ({ error: 0 }) }), { stage: 'response', httpStatus: 200 }],
+  ];
+  for (const [fetchImpl, diagnostic] of cases) {
+    await assert.rejects(verifyZaloIdentity(config(fetchImpl)), error => {
+      publicError('verification_failed')(error); assert.deepEqual(error.diagnostic, diagnostic); return true;
+    });
+  }
+});
+
+test('provider error codes never coerce private text, objects or oversized identifiers into diagnostics', async () => {
+  for (const errorCode of [token, secret, '-1241', Infinity, NaN, 100000, -100000, { code: -1241, message: token }]) {
+    await assert.rejects(verifyZaloIdentity(config(async () => ({ ok: true, status: 200,
+      json: async () => ({ error: errorCode, id: userId, message: token }) }))), error => {
+      publicError('verification_failed')(error);
+      assert.deepEqual(error.diagnostic, { stage: 'provider', httpStatus: 200 }); return true;
+    });
+  }
+});
+
+test('injected transport exceptions cannot forge provider diagnostics', async () => {
+  for (const exception of [new ZaloIdentityError('verification_failed', { stage: 'provider', providerCode: -1241, httpStatus: 200 }),
+    { diagnostic: { stage: 'provider', providerCode: -1241, httpStatus: 200 }, message: token },
+    { get diagnostic() { throw new Error(secret); } }]) {
+    await assert.rejects(verifyZaloIdentity(config(async () => { throw exception; })), error => {
+      publicError('verification_failed')(error); assert.deepEqual(error.diagnostic, { stage: 'transport' }); return true;
+    });
+  }
+});
+
+test('deadline during body parsing exposes timeout stage without pending response content', async () => {
+  await assert.rejects(verifyZaloIdentity({ ...config(async () => ({ ok: true, status: 200,
+    json: async () => new Promise(() => {}) })), timeoutMs: 5 }), error => {
+    publicError('timeout')(error); assert.deepEqual(error.diagnostic, { stage: 'timeout', httpStatus: 200 }); return true;
+  });
+});
+
+test('diagnostic constructor strips unsupported stages, identifiers and arbitrary properties', () => {
+  for (const diagnostic of [null, [], { stage: token }, { stage: 'provider', get providerCode() { throw new Error(secret); } }]) {
+    const error = new ZaloIdentityError('verification_failed', diagnostic);
+    assert.equal(error.diagnostic, undefined);
+    assert.ok(!JSON.stringify(error).includes(token));
+    assert.ok(!JSON.stringify(error).includes(secret));
+  }
+  const safe = new ZaloIdentityError('verification_failed', { stage: 'http', httpStatus: 700, providerCode: 0.5,
+    id: userId, token, appSecret: secret, detail: { token } });
+  assert.deepEqual(safe.diagnostic, { stage: 'http' });
+});

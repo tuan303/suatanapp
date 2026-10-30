@@ -4,9 +4,25 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
-import { readZaloRuntimeConfig, validateSchoolAccount, createFirestoreLinkStore, sanitizeSchoolProfile } from '../api/_lib/zalo-runtime.mjs';
+import { readZaloRuntimeConfig, validateSchoolAccount, createFirestoreLinkStore, sanitizeSchoolProfile, reportZaloVerificationFailure } from '../api/_lib/zalo-runtime.mjs';
+import { ZaloIdentityError } from '../miniapp/server/verify-zalo-identity.mjs';
 
 const require = createRequire(import.meta.url);
+
+test('verification diagnostics log only fixed stages and bounded numeric provider metadata', () => {
+  const lines = [];
+  const secret = 'TEST_ONLY_PRIVATE_DATA_MUST_NOT_APPEAR';
+  const error = new ZaloIdentityError('verification_failed', {
+    stage: 'provider', providerCode: -1241, httpStatus: 200, message: secret, accessToken: secret,
+  });
+  error.detail = secret;
+  reportZaloVerificationFailure(error, line => lines.push(line));
+  assert.deepEqual(lines, ['DKAN_ZALO_VERIFY_FAILED {"stage":"provider","providerCode":-1241,"httpStatus":200}']);
+  assert.ok(!lines.join('').includes(secret));
+  reportZaloVerificationFailure({ diagnostic: { stage: secret }, message: secret }, line => lines.push(line));
+  assert.equal(lines.length, 1);
+  assert.doesNotThrow(() => reportZaloVerificationFailure(error, () => { throw new Error(secret); }));
+});
 let createZaloHandler, AccountLinkError, createAccountLinkService;
 test.before(async () => {
   const result = await build({ stdin: { contents: `export {createZaloHandler} from './api/zalo.ts'; export {AccountLinkError,createAccountLinkService} from './miniapp/server/account-links.mjs';`,

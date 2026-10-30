@@ -45,4 +45,6 @@ Sau khi mã nguồn được cập nhật, bấm **Deploy → Development → De
 
 Nếu còn lỗi, gửi phần **Mã hỗ trợ** và phiên bản liên kết để đối chiếu. SDK `-1401` có nhiều nguyên nhân về xác thực nên chưa đủ để kết luận sai App Secret; các lỗi `-1403` (quyền API), `-1404` (phiên bản Zalo), `-1408` (quá thời gian chờ) cần xử lý theo mã thực tế. Không tự xin thêm quyền tên/ảnh/số điện thoại để khắc phục lỗi lấy ID: `getAccessToken` từ SDK 2.35 đã hỗ trợ ID mặc định.
 
+Nếu SDK đã lấy được phiên nhưng màn hình báo phiên xác thực chưa hợp lệ, quản trị có thể lọc Runtime Logs của dự án Vercel `suatanapp` theo đúng chuỗi `DKAN_ZALO_VERIFY_FAILED`. Dòng này chỉ chứa bước xử lý, mã lỗi số do Zalo trả về và HTTP status; không chứa token, App Secret, hồ sơ hoặc nội dung lỗi gốc. Chỉ dùng dòng đã lọc này để hỗ trợ chẩn đoán; không gửi toàn bộ log hay khóa qua chat. Việc cập nhật chẩn đoán máy chủ không yêu cầu deploy lại Mini App.
+
 Tham khảo: [hướng dẫn Extension](https://marketplace.visualstudio.com/items?itemName=zalo-mini-app.zalo-mini-app), [quy trình Testing và phát hành](https://docs.zaloplatforms.com/docs/MA/intro/public-mini-program), [getAccessToken](https://docs.zaloplatforms.com/docs/MA/api/user/user-information/getAccessToken), [mã lỗi SDK](https://docs.zaloplatforms.com/docs/MA/api/errorCode).
