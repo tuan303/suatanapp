@@ -1,0 +1,211 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Email đã chuẩn hoá (bỏ khoảng trắng, chữ thường). Trả '' nếu token không có email.
+    function userEmail() {
+      return isSignedIn() && request.auth.token.email is string
+        ? request.auth.token.email.trim().lower()
+        : '';
+    }
+
+    // Admin = super admin, HOẶC có doc trong `admins`.
+    // Doc id của `admins` do app sinh ra theo công thức:
+    //   email.trim().toLowerCase().replace(/[^a-z0-9]/g, '_')
+    // (xem handleAddAdmin trong src/pages/Admin.tsx). Nhờ nhánh này, thêm quản trị
+    // viên từ tab QUẢN TRỊ là có quyền ghi ngay, không phải deploy lại rules.
+    // Danh sách super admin cố định chỉ để khởi tạo / cứu hộ khi mất quyền,
+    // phải khớp với SUPER_ADMINS trong src/pages/Admin.tsx.
+    function isAdmin() {
+      let email = userEmail();
+      let adminDocId = email.replace('[^a-z0-9]', '_');
+      return isSignedIn() && (
+        email in [
+          'tuantm@hoangmaistarschool.edu.vn',
+          'tuyetkta@hoangmaistarschool.edu.vn',
+          'tuan303@gmail.com'
+        ] ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (email != '' && exists(/databases/$(database)/documents/admins/$(adminDocId)))
+      );
+    }
+
+    match /staff/{uid} {
+      allow read, write: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+    }
+
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /settings/{settingId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /blocked_users/{month} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // Thực đơn import từ Excel: nhân viên xem, quản trị/Nhóm Dinh dưỡng cập nhật.
+    // Chỉ lưu văn bản của 7 mục x 5 ngày; không lưu tệp Excel hoặc HTML tùy ý.
+    function validMenuText(value) {
+      return value is string && value.size() <= 300;
+    }
+
+    function validMenuDay(day) {
+      return day is map
+        && day.keys().hasOnly(['date', 'breakfast', 'main', 'side', 'vegetable', 'soup', 'rice', 'dessert'])
+        && day.date is string && day.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && validMenuText(day.breakfast) && validMenuText(day.main)
+        && validMenuText(day.side) && validMenuText(day.vegetable)
+        && validMenuText(day.soup) && validMenuText(day.rice) && validMenuText(day.dessert);
+    }
+
+    function validWeeklyMenu(weekId) {
+      let menu = request.resource.data;
+      return weekId.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && menu.keys().hasOnly(['weekId', 'version', 'days', 'note', 'updatedAt', 'updatedBy', 'publishedAt'])
+        && menu.weekId == weekId && menu.version == 1
+        && menu.days is list && menu.days.size() == 5
+        && validMenuDay(menu.days[0]) && validMenuDay(menu.days[1])
+        && validMenuDay(menu.days[2]) && validMenuDay(menu.days[3]) && validMenuDay(menu.days[4])
+        && menu.days[0].date == weekId
+        && menu.days[0].date < menu.days[1].date && menu.days[1].date < menu.days[2].date
+        && menu.days[2].date < menu.days[3].date && menu.days[3].date < menu.days[4].date
+        && (!('note' in menu) || (menu.note is string && menu.note.size() <= 1000))
+        && menu.updatedBy == request.auth.uid
+        && menu.updatedAt == request.time
+        && (!('publishedAt' in menu) || menu.publishedAt is timestamp);
+    }
+
+    match /weekly_menus/{weekId} {
+      allow read: if isSignedIn();
+      allow create, update: if isAdmin() && validWeeklyMenu(weekId);
+      allow delete: if isAdmin();
+    }
+
+    // Lượt chấm ăn đồng bộ từ máy nhận diện. Đây là dữ liệu cá nhân (ai ăn
+    // bữa nào, lúc mấy giờ) nên chỉ quản trị mới được đọc. Không ai ghi từ
+    // trình duyệt: agent dùng Admin SDK nên đi thẳng, không qua rules.
+    match /checkins/{date} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Lượt chấm của TỪNG NGƯỜI, agent tách ra từ checkins/{date} để CBNV tự xem
+    // "hôm nay mình đã chấm ăn chưa" mà không phải mở checkins (chứa giờ ăn của
+    // cả trường). Mỗi người chỉ đọc được document mang uid của chính mình. Lượt
+    // chấm nào vào document của ai là do agent quyết định theo mã NV trên ĐƠN
+    // ĐĂNG KÝ tháng đó — không theo staff/{uid} vì hồ sơ đó chính chủ sửa được
+    // bất cứ lúc nào; mã đứng trên đơn của hai tài khoản thì không gán cho ai.
+    match /meal_taps/{uid}/months/{month} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      allow write: if false;
+    }
+
+    // Nhật ký email cảnh báo "đăng ký mà không chấm" agent đã gửi, dùng để không
+    // gửi trùng khi agent chạy lại nhiều lần trong giờ. Dữ liệu cá nhân nên chỉ
+    // quản trị đọc; chỉ agent (Admin SDK) ghi.
+    match /meal_alerts/{alertId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Nhật ký đăng nhập. Người dùng chỉ được TỰ ghi dòng của chính mình và
+    // không sửa/xóa được — nhật ký mà đương sự sửa được thì không còn giá trị
+    // đối chứng. Chỉ quản trị được đọc vì đây là dữ liệu cá nhân (ai đăng nhập
+    // lúc nào, bằng thiết bị gì). Cho quản trị xóa để dọn log cũ.
+    match /login_logs/{logId} {
+      allow read, delete: if isAdmin();
+      allow create: if isSignedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status in ['success', 'rejected'];
+      allow update: if false;
+    }
+
+    // Khảo sát chất lượng suất ăn hằng tuần. Mã đáp án phải khớp SURVEY_QUESTIONS
+    // trong agent/lib/survey.mjs — test agent/test/survey.test.mjs đối chiếu.
+    function validSurveyAnswers(a) {
+      return a is map
+        && a.keys().hasOnly(['taste', 'variety', 'warmth', 'portion', 'hygiene', 'liked', 'disliked', 'suggestion'])
+        && a.taste in ['ngon', 'binh_thuong', 'chua_ngon']
+        && a.variety in ['da_dang', 'chua_da_dang']
+        && a.warmth in ['du_nong', 'chua_du_nong']
+        && a.portion in ['thua', 'vua_du', 'thieu']
+        && a.hygiene in ['sach', 'chua_sach']
+        && a.liked is string && a.liked.size() > 0 && a.liked.size() <= 500
+        && (!('disliked' in a) || (a.disliked is string && a.disliked.size() <= 500))
+        && (!('suggestion' in a) || (a.suggestion is string && a.suggestion.size() <= 1000));
+    }
+
+    // Khảo sát tuần {weekId} đang nhận trả lời: giờ máy chủ Firestore nằm trong
+    // [opensAt, closesAt) của document tuần. Không tin giờ máy người dùng.
+    function surveyOpen(weekId) {
+      let s = get(/databases/$(database)/documents/meal_surveys/$(weekId)).data;
+      return request.time >= s.opensAt && request.time < s.closesAt;
+    }
+
+    match /meal_surveys/{weekId} {
+      // Lịch mở/đóng và trạng thái gửi email: ai đăng nhập cũng đọc (để hiện
+      // nhắc khảo sát), chỉ quản trị và agent (Admin SDK) ghi.
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+
+      // Mỗi người một câu trả lời mỗi tuần, khoá theo uid; sửa được tới hạn.
+      // Không ẩn danh (giống form Microsoft cũ): quản trị đọc được kèm họ tên.
+      match /responses/{uid} {
+        allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+        allow create, update: if isSignedIn()
+          && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['uid', 'weekId', 'version', 'answers', 'fullName', 'employeeId', 'department', 'email', 'submittedAt', 'updatedAt'])
+          && request.resource.data.uid == uid
+          && request.resource.data.weekId == weekId
+          && validSurveyAnswers(request.resource.data.answers)
+          && surveyOpen(weekId);
+        allow delete: if isAdmin();
+      }
+
+      // Danh sách người được mời (họ tên, email) để quản trị xem ai chưa trả
+      // lời. Chỉ agent ghi.
+      match /private/{docId} {
+        allow read: if isAdmin();
+        allow write: if false;
+      }
+    }
+
+    match /events/{eventId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // Đơn đăng ký ăn chỉ được tạo cho CHÍNH MÌNH: userId là tài khoản đang đăng
+    // nhập và mã document đúng dạng {uid}_{tháng} như trang đăng ký vẫn ghi.
+    // Trước đây ai đăng nhập cũng tạo được đơn mang tài khoản người khác; từ khi
+    // có email cảnh báo "đăng ký mà không chấm", một đơn giả như vậy sẽ khiến
+    // đồng nghiệp bị gửi cảnh báo oan mỗi ngày. Đọc giữ nguyên như cũ.
+    match /registrations/{registrationId} {
+      allow read: if isSignedIn() && (resource == null || resource.data.userId == request.auth.uid || isAdmin());
+      allow create, update: if isSignedIn() && (isAdmin() || (
+        (resource == null || resource.data.userId == request.auth.uid) &&
+        request.resource.data.userId == request.auth.uid &&
+        registrationId == request.auth.uid + '_' + request.resource.data.month
+      ));
+      allow delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /cancel_registrations/{cancelId} {
+      allow read, write: if isSignedIn() && (resource == null || resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /event_registrations/{eventRegId} {
+      allow read, write: if isSignedIn() && (resource == null || resource.data.userId == request.auth.uid || isAdmin());
+    }
+  }
+}

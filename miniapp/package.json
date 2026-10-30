@@ -1,0 +1,27 @@
+{
+  "name": "dkan-zalo-miniapp",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Bản phát triển Zalo Mini App Suất ăn Ngôi Sao Hoàng Mai",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 4930 --strictPort",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4930 --strictPort",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "zmp-sdk": "2.53.3"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "~6.0.3",
+    "vite": "^5.4.18",
+    "zmp-vite-plugin": "1.1.6"
+  }
+}

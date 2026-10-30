@@ -1,0 +1,16 @@
+{
+  "app": {
+    "title": "Suất ăn Ngôi Sao Hoàng Mai",
+    "headerTitle": "Suất ăn",
+    "headerColor": "#ffffff",
+    "textColor": "black",
+    "statusBar": "normal",
+    "actionBarHidden": false,
+    "hideAndroidBottomNavigationBar": false,
+    "hideIOSSafeAreaBottom": false
+  },
+  "debug": false,
+  "listCSS": [],
+  "listSyncJS": [],
+  "listAsyncJS": []
+}

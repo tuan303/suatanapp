@@ -1,0 +1,24 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Bí mật của agent đồng bộ chấm ăn: mật khẩu 2 máy nhận diện và khóa Firebase.
+# Tuyệt đối không đưa lên GitHub.
+agent/config.json
+agent/firebase-key.json
+agent/*-firebase-adminsdk-*.json
+
+# Cấu hình riêng của Claude Code trên máy từng người, không phải của dự án.
+.claude/
+
+# File sinh ra khi agent chạy trên máy HAC: log và khoá "đang chạy".
+agent/dong-bo.log
+agent/dong-bo.old.log
+agent/dong-bo.lock
+agent/khao-sat.log
+agent/khao-sat.old.log

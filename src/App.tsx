@@ -1,0 +1,36 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import Login from './pages/Login';
+import RegisterStaff from './pages/RegisterStaff';
+import ScheduleMonth from './pages/ScheduleMonth';
+import ScheduleEvent from './pages/ScheduleEvent';
+import Dashboard from './pages/Dashboard';
+import Admin from './pages/Admin';
+import MyMeals from './pages/MyMeals';
+import MealSurvey from './pages/MealSurvey';
+import WeeklyMenu from './pages/WeeklyMenu';
+import ZaloAccountLink from './pages/ZaloAccountLink';
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Navigate to="/login" replace />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<RegisterStaff />} />
+        <Route path="/schedule" element={<ScheduleMonth />} />
+        <Route path="/events" element={<ScheduleEvent />} />
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/quantri" element={<Admin />} />
+        <Route path="/cham-an" element={<MyMeals />} />
+        <Route path="/khao-sat" element={<MealSurvey />} />
+        <Route path="/thuc-don" element={<WeeklyMenu />} />
+        <Route path="/lien-ket-zalo" element={<ZaloAccountLink />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
