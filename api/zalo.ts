@@ -18,7 +18,7 @@ export function createZaloHandler({ env = process.env, getService }: Dependencie
     res.setHeader('Vary', 'Origin');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     const error = (status: number, code: string, message: string) => res.status(status).json({ error: { code, message } });
-    const origins = new Set(['https://dkan.nshm.vn', 'https://h5.zdn.vn']);
+    const origins = new Set(['https://dkan.nshm.vn', 'https://suatanapp.vercel.app', 'https://h5.zdn.vn']);
     if (env.NODE_ENV !== 'production') for (const host of ['localhost', '127.0.0.1'])
       for (const port of [3000, 4930]) origins.add(`http://${host}:${port}`);
     const origin = req.headers.origin;

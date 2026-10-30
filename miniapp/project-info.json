@@ -3,7 +3,9 @@
   "zaloAppId": "928403133949225802",
   "workingTitle": "Suất ăn Ngôi Sao Hoàng Mai",
   "stage": "prototype",
-  "accountLink": "implemented-not-deployed",
+  "accountLink": "api-deployed-awaiting-device-test",
   "dataSource": "demo-only",
-  "schoolWebOrigin": "https://dkan.nshm.vn"
+  "schoolWebOrigin": "https://dkan.nshm.vn",
+  "accountLinkWebOrigin": "https://suatanapp.vercel.app",
+  "apiOrigin": "https://suatanapp.vercel.app"
 }

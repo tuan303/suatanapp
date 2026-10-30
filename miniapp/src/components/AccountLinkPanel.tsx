@@ -4,7 +4,6 @@ import type { LinkedSession } from '../lib/accountLink';
 
 type View = 'start' | 'code' | 'waiting' | 'linked';
 type Busy = 'check' | 'claim' | 'finish' | 'refresh' | 'logout' | null;
-const website = 'https://dkan.nshm.vn/lien-ket-zalo';
 const timeLabel = (value: number) => new Intl.DateTimeFormat('vi-VN', {
   timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit', second: '2-digit',
 }).format(new Date(value));
@@ -18,6 +17,7 @@ export function AccountLinkPanel({
     catch (error) { return { client: null, error: accountLinkMessage(error) }; }
   }, [apiOrigin, development]);
   const client = setup.client;
+  const website = client?.websiteUrl;
   const [view, setView] = useState<View>('start');
   const [busy, setBusy] = useState<Busy>(null);
   const [code, setCode] = useState('');
@@ -244,7 +244,7 @@ export function AccountLinkPanel({
       <button className="ma-primary" disabled={!client?.configured || !!busy} onClick={() => { void checkAccount(); }}>{busy === 'check' ? 'Đang kiểm tra tài khoản…' : 'Kiểm tra tài khoản Zalo'}</button>
     </>}
 
-    {view === 'code' && <>
+    {view === 'code' && website && <>
       <ol className="ma-link-steps"><li><span>1</span><div>Mở website bằng trình duyệt:<code className="ma-link-address">{website}</code></div></li><li><span>2</span><div>Đăng nhập tài khoản Microsoft của trường và tạo mã liên kết.</div></li><li><span>3</span><div>Dán mã vào đây, sau đó quay lại website để xác nhận liên kết.</div></li></ol>
       <form onSubmit={event => { event.preventDefault(); void claimCode(); }}>
         <label className="ma-field">Mã liên kết trên website<input className="ma-link-code-input" value={code} onChange={event => setCode(event.target.value)} maxLength={80} autoComplete="off" autoCapitalize="none" spellCheck={false} placeholder="Dán mã liên kết của bạn" disabled={!!busy} /></label>
@@ -253,7 +253,7 @@ export function AccountLinkPanel({
       <button className="ma-link-secondary" disabled={!!busy} onClick={() => { invalidate(); clearIdentity(); setView('start'); setError(null); setNotice(null); }}>Kiểm tra lại tài khoản Zalo</button>
     </>}
 
-    {view === 'waiting' && <>
+    {view === 'waiting' && website && <>
       <div className="ma-link-waiting" role="status"><span className="ma-link-pulse" /><strong>{busy === 'finish' ? 'Đang hoàn tất xác minh…' : 'Chờ xác nhận trên website'}</strong><p>Quay lại website nhà trường và bấm xác nhận liên kết. Chỉ sau bước đó, Mini App mới được cấp phiên cá nhân.</p>{claimExpiry && <small>Yêu cầu có hiệu lực đến {timeLabel(claimExpiry)}.</small>}</div>
       <code className="ma-link-address">{website}</code>
       {pollPaused && <button className="ma-primary" disabled={!!busy} onClick={retryPoll}>Kiểm tra lại trạng thái</button>}

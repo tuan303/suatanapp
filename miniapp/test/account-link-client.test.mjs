@@ -35,17 +35,52 @@ test('blank origin is unconfigured and never calls fetch or SDK', async () => {
   let calls = 0;
   const inactive = createAccountLinkClient({ origin: '', fetchImpl: async () => { calls++; }, tokenProvider: async () => { calls++; return privateToken; } });
   assert.equal(inactive.configured, false);
+  assert.equal(inactive.websiteUrl, null);
   await assert.rejects(inactive.getZaloToken(), safeFailure('not_configured'));
   await assert.rejects(inactive.login(privateToken), safeFailure('not_configured'));
   assert.equal(calls, 0);
 });
 
-test('production accepts only the exact HTTPS school origin', () => {
+test('production accepts only the exact reviewed HTTPS origins', () => {
   assert.equal(resolveAccountApiOrigin(' https://dkan.nshm.vn/ '), origin);
   assert.equal(resolveAccountApiOrigin('https://dkan.nshm.vn:443'), origin);
-  for (const value of ['http://dkan.nshm.vn', 'https://dkan.nshm.vn.evil.test', 'https://evil.test', 'https://dkan.nshm.vn/path', 'https://dkan.nshm.vn/?secret=x', 'https://dkan.nshm.vn/#x', 'https://u:p@dkan.nshm.vn', 'https://dkan.nshm.vn:444', 'http://localhost:4930', '//dkan.nshm.vn', 123]) {
+  assert.equal(resolveAccountApiOrigin(' https://suatanapp.vercel.app/ '), 'https://suatanapp.vercel.app');
+  assert.equal(resolveAccountApiOrigin('https://suatanapp.vercel.app:443'), 'https://suatanapp.vercel.app');
+  for (const value of ['http://dkan.nshm.vn', 'https://dkan.nshm.vn.evil.test', 'https://evil.test', 'https://dkan.nshm.vn/path', 'https://dkan.nshm.vn/?secret=x', 'https://dkan.nshm.vn/#x', 'https://u:p@dkan.nshm.vn', 'https://dkan.nshm.vn:444', 'http://localhost:4930', '//dkan.nshm.vn', 123,
+    'http://suatanapp.vercel.app', 'https://suatanapp.vercel.app.evil.test', 'https://evil-suatanapp.vercel.app',
+    'https://suatanapp-git-main-tuan303-5380s-projects.vercel.app', 'https://suatanapp-random-tuan303-5380s-projects.vercel.app',
+    'https://suatanapp.vercel.app/path', 'https://suatanapp.vercel.app/?secret=x', 'https://suatanapp.vercel.app/#x',
+    'https://u:p@suatanapp.vercel.app', 'https://suatanapp.vercel.app:444', '//suatanapp.vercel.app']) {
     assert.throws(() => resolveAccountApiOrigin(value), safeFailure('invalid_origin'));
   }
+});
+
+test('the account-link website follows the validated API origin without a cross-site fallback', () => {
+  for (const apiOrigin of [origin, 'https://suatanapp.vercel.app']) {
+    assert.equal(createAccountLinkClient({ origin: `${apiOrigin}/` }).websiteUrl, `${apiOrigin}/lien-ket-zalo`);
+  }
+  assert.equal(createAccountLinkClient({ origin: undefined }).websiteUrl, null);
+  assert.throws(() => createAccountLinkClient({ origin: 'https://untrusted.vercel.app' }), safeFailure('invalid_origin'));
+  assert.equal(createAccountLinkClient({ origin: 'http://localhost:3000', development: true }).websiteUrl,
+    'http://localhost:3000/lien-ket-zalo');
+});
+
+test('the new production origin receives authentication only at its exact API endpoint', async () => {
+  const productionOrigin = 'https://suatanapp.vercel.app';
+  let calls = 0;
+  const api = createAccountLinkClient({ origin: productionOrigin, fetchImpl: async (url, options) => {
+    calls++;
+    assert.equal(url, `${productionOrigin}/api/zalo`);
+    assert.equal(options.headers.Authorization, `Bearer ${privateToken}`);
+    assert.equal(options.credentials, 'omit');
+    assert.equal(options.redirect, 'error');
+    assert.deepEqual(JSON.parse(options.body), { action: 'mini.login' });
+    return response({ linked: false });
+  } });
+  assert.equal(calls, 0);
+  assert.equal(api.websiteUrl, `${productionOrigin}/lien-ket-zalo`);
+  assert.deepEqual(await api.login(privateToken), { linked: false });
+  assert.equal(calls, 1);
 });
 
 test('localhost origins are available only with the explicit development flag', () => {
@@ -144,10 +179,22 @@ test('personal me and logout preserve their action scope', async () => {
 });
 
 test('API errors use only known safe codes and ignore raw provider messages', async () => {
-  for (const [status, code] of [[401, 'auth_required'], [403, 'forbidden'], [409, 'challenge_unavailable'], [410, 'expired'], [429, 'rate_limited'], [503, 'not_configured'], [500, 'request_failed']]) {
+  for (const [status, code] of [[401, 'auth_required'], [403, 'forbidden'], [409, 'challenge_unavailable'], [410, 'expired'], [429, 'rate_limited'], [503, 'service_unavailable'], [500, 'request_failed']]) {
     await assert.rejects(client(async () => response({ error: { code: 'unknown_error', message: `${privateToken} ${privateProviderError}` } }, status)).login(privateToken), safeFailure(code));
   }
   await assert.rejects(client(async () => response({ error: { code: 'link_conflict', message: privateProviderError } }, 409)).login(privateToken), safeFailure('link_conflict'));
+});
+
+test('HTTP 503 preserves explicit feature-off versus service-failure diagnostics', async () => {
+  for (const code of ['not_configured', 'service_unavailable']) {
+    await assert.rejects(client(async () => response({ error: { code, message: `${privateToken} ${privateProviderError}` } }, 503))
+      .login(privateToken), safeFailure(code));
+  }
+  const featureOff = new AccountLinkError('not_configured');
+  const serviceFailure = new AccountLinkError('service_unavailable');
+  assert.notEqual(featureOff.message, serviceFailure.message);
+  assert.doesNotMatch(serviceFailure.message, /Chưa cấu hình/);
+  await assert.rejects(client(async () => response({}, 503)).login(privateToken), safeFailure('service_unavailable'));
 });
 
 test('malformed JSON and raw fetch errors never expose underlying error text', async () => {

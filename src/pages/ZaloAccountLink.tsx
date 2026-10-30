@@ -19,7 +19,8 @@ export function isSchoolMicrosoftUser(user: Pick<User, 'email' | 'providerData'>
 }
 
 export function zaloLinkErrorMessage(code: string | undefined, status?: number) {
-  if (status === 503 || code === 'not_configured') return 'Chức năng liên kết chưa được bật trên máy chủ.';
+  if (code === 'not_configured') return 'Chức năng liên kết chưa được bật trên máy chủ.';
+  if (status === 503 || code === 'service_unavailable') return 'Máy chủ chưa xử lý được yêu cầu liên kết. Vui lòng thử lại hoặc liên hệ bộ phận CNTT kiểm tra kết nối.';
   if (code === 'recent_login_required' || code === 'recent_auth_required') return 'Vui lòng xác minh lại tài khoản Microsoft trước khi thực hiện thao tác.';
   if (status === 401 || code === 'auth_required') return 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại bằng tài khoản Microsoft của trường.';
   if (status === 403 || code === 'forbidden') return 'Tài khoản này chưa được phép liên kết Zalo. Vui lòng sử dụng tài khoản Microsoft của nhà trường đã được cấp quyền.';

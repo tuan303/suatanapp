@@ -8,6 +8,7 @@ export type ClaimState = { state: 'pending' | 'approved' | 'expired'; expiresAt:
 
 const messages: Record<string, string> = {
   not_configured: 'Chưa cấu hình kết nối. Nhà trường cần hoàn tất cấu hình API trước khi liên kết.',
+  service_unavailable: 'Máy chủ liên kết chưa xử lý được yêu cầu. Vui lòng thử lại hoặc liên hệ quản trị nhà trường.',
   invalid_origin: 'Địa chỉ API chưa hợp lệ. Vui lòng liên hệ quản trị nhà trường.',
   zalo_required: 'Vui lòng mở Mini App trong Zalo và bấm kiểm tra tài khoản lại.',
   auth_required: 'Phiên xác thực đã hết hạn hoặc chưa hợp lệ. Vui lòng kiểm tra tài khoản Zalo lại.',
@@ -40,7 +41,7 @@ export function accountLinkMessage(error: unknown): string {
   return error instanceof AccountLinkError ? error.message : messages.request_failed;
 }
 
-/** Only the fixed school origin is allowed in builds distributed to users. */
+/** Only the reviewed production origins are allowed in distributed builds. */
 export function resolveAccountApiOrigin(value: unknown, development = false): string | null {
   if (value === undefined || value === null || value === '') return null;
   if (typeof value !== 'string') throw new AccountLinkError('invalid_origin');
@@ -49,10 +50,11 @@ export function resolveAccountApiOrigin(value: unknown, development = false): st
   let url: URL;
   try { url = new URL(candidate); } catch { throw new AccountLinkError('invalid_origin'); }
   if (url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new AccountLinkError('invalid_origin');
-  const school = url.protocol === 'https:' && url.hostname === 'dkan.nshm.vn' && !url.port;
+  const production = url.protocol === 'https:'
+    && ['dkan.nshm.vn', 'suatanapp.vercel.app'].includes(url.hostname) && !url.port;
   const local = development && ['http:', 'https:'].includes(url.protocol)
     && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  if (!school && !local) throw new AccountLinkError('invalid_origin');
+  if (!production && !local) throw new AccountLinkError('invalid_origin');
   return url.origin;
 }
 
@@ -79,7 +81,7 @@ function errorCode(body: unknown, status: number) {
   const candidate = isObject(body) && isObject(body.error) ? body.error.code
     : isObject(body) && typeof body.error === 'string' ? body.error : isObject(body) ? body.code : null;
   if (typeof candidate === 'string' && Object.hasOwn(messages, candidate)) return candidate;
-  return ({ 401: 'auth_required', 403: 'forbidden', 409: 'challenge_unavailable', 410: 'expired', 429: 'rate_limited', 503: 'not_configured' } as Record<number, string>)[status] || 'request_failed';
+  return ({ 401: 'auth_required', 403: 'forbidden', 409: 'challenge_unavailable', 410: 'expired', 429: 'rate_limited', 503: 'service_unavailable' } as Record<number, string>)[status] || 'request_failed';
 }
 
 type ClientOptions = {
@@ -139,6 +141,7 @@ export function createAccountLinkClient(options: ClientOptions = {}) {
 
   return {
     configured: !!origin,
+    websiteUrl: origin ? `${origin}/lien-ket-zalo` : null,
     async getZaloToken(signal?: AbortSignal) {
       requireOrigin();
       cancelled(signal);

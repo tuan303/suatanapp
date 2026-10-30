@@ -34,7 +34,8 @@ test('feature disabled fails closed without opening Firebase or running service'
   assert.equal(r.statusCode, 503); assert.equal(r.calls, 0); assert.equal(r.payload.error.code, 'not_configured');
 });
 test('CORS only permits the school and Zalo origins, with no credential cookie access', async () => {
-  for (const origin of ['https://evil.example', 'null', 'https://h5.zdn.vn.evil.example', 'http://127.0.0.1:4930']) {
+  for (const origin of ['https://evil.example', 'null', 'https://h5.zdn.vn.evil.example', 'http://127.0.0.1:4930',
+    'http://suatanapp.vercel.app', 'https://suatanapp.vercel.app.evil.example', 'https://suatanapp-preview.vercel.app']) {
     const r = await request({ origin }); assert.equal(r.statusCode, 403); assert.equal(r.calls, 0);
   }
   const preflight = await request({ method: 'OPTIONS' });
@@ -43,6 +44,9 @@ test('CORS only permits the school and Zalo origins, with no credential cookie a
   assert.equal(preflight.headers['Access-Control-Allow-Credentials'], undefined);
   assert.match(preflight.headers['Access-Control-Allow-Headers'], /Authorization/);
   assert.equal((await request({ origin: 'http://127.0.0.1:4930', environment: 'development' })).statusCode, 200);
+  const deployedWeb = await request({ origin: 'https://suatanapp.vercel.app' });
+  assert.equal(deployedWeb.statusCode, 200);
+  assert.equal(deployedWeb.headers['Access-Control-Allow-Origin'], 'https://suatanapp.vercel.app');
 });
 test('rejects methods and missing or malformed bearer tokens before service', async () => {
   assert.equal((await request({ method: 'GET' })).statusCode, 405);

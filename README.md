@@ -18,9 +18,11 @@ Mã nguồn phần mềm đăng ký suất ăn của nhà trường, kèm bản 
 - Zalo App ID cha: `928403133949225802`.
 - Đã có mã xác minh danh tính Zalo phía server, liên kết với hồ sơ Microsoft của trường bằng mã một lần và xác nhận trên web, phiên API cá nhân và hủy liên kết.
 - Các tab đăng ký, hủy ăn, thực đơn, sự kiện và khảo sát trong Mini App hiện dùng **dữ liệu minh họa**; chưa nối các API nghiệp vụ thật.
-- Việc đưa mã lên GitHub không tự cấu hình Vercel, tạo phiên bản Testing hoặc phát hành Mini App. Chưa xác nhận đăng nhập Microsoft/Zalo thật trong bản này.
+- Web/API đã triển khai tại `https://suatanapp.vercel.app`. Chưa xác nhận đăng nhập Microsoft/Zalo thật trên điện thoại hoặc đưa bản Testing/phát hành Mini App.
 
 Đọc [hướng dẫn Mini App](miniapp/README.md) để cấu hình và chạy thử. Lần đầu người dùng xác minh tài khoản Microsoft của trường để liên kết đúng hồ sơ; các lần đăng nhập Mini App sau dùng danh tính Zalo đã liên kết.
+
+Bước thử nghiệm trên điện thoại: [hướng dẫn Device Mode / Testing và liên kết một tài khoản](docs/ZALO_DEVICE_TEST.md).
 
 ## Chạy trên máy tính
 
@@ -49,7 +51,9 @@ Website/API dùng thư mục gốc của repository, lệnh build `npm run build
 
 Cấu hình các biến trong `.env.example` trên máy chủ/Vercel. Để thử liên kết thật cần `ZALO_APP_ID`, `ZALO_MINI_APP_ID`, `ZALO_APP_SECRET_KEY`, `FIREBASE_ADMIN_CREDENTIALS_JSON` của project Firebase `dkan-4b061` và `DKAN_ZALO_ENABLED=true`; giữ cờ tắt trong lúc chuẩn bị. Sau khi đổi biến môi trường cần triển khai lại.
 
-API sản xuất hiện cho phép website `https://dkan.nshm.vn` và Mini App origin `https://h5.zdn.vn`. Mini App chỉ đặt `VITE_DKAN_API_ORIGIN=https://dkan.nshm.vn` sau khi API đã hoạt động. Nếu chuyển nguồn Git của dự án Vercel đang vận hành sang repository này, kiểm tra đúng project, biến môi trường và tên miền trước khi triển khai. Một tên miền preview `*.vercel.app` riêng chưa đáp ứng cấu hình origin hiện tại.
+API sản xuất cho phép hai website cố định `https://dkan.nshm.vn`, `https://suatanapp.vercel.app` và Mini App origin `https://h5.zdn.vn`. Mini App dùng `VITE_DKAN_API_ORIGIN=https://suatanapp.vercel.app`; trang xác nhận liên kết thuộc cùng origin API tại `/lien-ket-zalo`. Không cho phép mọi tên miền `*.vercel.app` hoặc các URL preview. Website DKAN hiện có tiếp tục dùng tên miền trường.
+
+Khi đăng nhập Microsoft trên website mới, cấu hình `suatanapp.vercel.app` trong Firebase Authentication → Settings → Authorized domains nếu tên miền này chưa có. Thử Mini App bằng Device Mode hoặc bản Testing trong Zalo; trình duyệt máy tính dùng để kiểm tra giao diện.
 
 Không đưa khóa bí mật vào `VITE_*`, mã client hoặc Git. Repository chỉ chứa cấu hình mẫu; các tệp `.env` thật, service account, `agent/config.json`, `node_modules` và đầu ra build được loại khỏi Git.
 

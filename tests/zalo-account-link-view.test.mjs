@@ -55,6 +55,15 @@ test('trạng thái chưa bật API thể hiện rõ, không hiển thị tạo 
   assert.doesNotMatch(html, /Xác minh Microsoft và tạo mã|Đã liên kết Zalo/);
 });
 
+test('lỗi dịch vụ không bị diễn giải thành cờ tính năng đang tắt', () => {
+  const disabled = component.zaloLinkErrorMessage('not_configured', 503);
+  const failed = component.zaloLinkErrorMessage('service_unavailable', 503);
+  assert.notEqual(failed, disabled);
+  assert.match(failed, /Máy chủ chưa xử lý được/);
+  assert.equal(component.zaloLinkErrorMessage(undefined, 503), failed);
+  assert.doesNotMatch(failed, /chưa được bật/);
+});
+
 test('chỉ hiển thị mã trong nội dung và sao chép, không đưa mã hoặc challenge vào URL', () => {
   const html = render({ challenge });
   assert.match(html, /SAMPLE_link_CODE_12345678/);
