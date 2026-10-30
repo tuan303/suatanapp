@@ -12,7 +12,7 @@ const compiled = await build({
 });
 const module = { exports: {} };
 new Function('require', 'module', 'exports', compiled.outputFiles[0].text)(require, module, module.exports);
-const { createAccountLinkClient, resolveAccountApiOrigin, AccountLinkError, accountLinkMessage } = module.exports;
+const { createAccountLinkClient, resolveAccountApiOrigin, AccountLinkError, accountLinkMessage, classifyZaloSdkEnvironment } = module.exports;
 const privateToken = 'TEST_ONLY_private_token_12345';
 const privateProviderError = 'TEST_ONLY_provider_error_must_not_appear';
 const origin = 'https://dkan.nshm.vn';
@@ -240,9 +240,117 @@ test('late SDK completion after cancellation cannot return a usable token', asyn
 });
 
 test('SDK errors and timeouts have safe messages and never reveal token details', async () => {
-  await assert.rejects(client(async () => response({}), { tokenProvider: async () => { throw new Error(privateProviderError); } }).getZaloToken(), safeFailure('zalo_required'));
+  await assert.rejects(client(async () => response({}), { tokenProvider: async () => { throw new Error(privateProviderError); } }).getZaloToken(), safeFailure('zalo_auth_failed'));
   await assert.rejects(client(async () => response({}), { tokenProvider: () => new Promise(() => {}), timeoutMs: 4 }).getZaloToken(), safeFailure('timeout'));
   await assert.rejects(client((_url, options) => new Promise((_resolve, reject) => {
     options.signal.addEventListener('abort', () => reject(new Error(privateProviderError)), { once: true });
   }), { timeoutMs: 4 }).login(privateToken), safeFailure('timeout'));
+});
+
+test('support environment is a bounded context category, never a URL or authentication proof', async () => {
+  const samples = [
+    [{ hostname: 'h5.zdn.vn', pathname: '/zapps/3378419117469948059/', search: `?token=${privateToken}` }, 'miniapp'],
+    [{ hostname: 'h5.zdn.vn', pathname: '/', search: `?env=TESTING_LOCAL&token=${privateToken}` }, 'miniapp'],
+    [{ hostname: 'h5.zdn.vn', pathname: '/ordinary-webview', search: '' }, 'web'],
+    [{ hostname: 'h5.zdn.vn.evil.test', pathname: '/zapps/anything', search: '' }, 'web'],
+    [{ hostname: 'suatanapp.vercel.app', pathname: '/login', search: '' }, 'web'],
+    [{ hostname: '127.0.0.1', pathname: '/', search: '' }, 'development'],
+    [null, 'unknown'], [undefined, 'unknown'], [{ hostname: privateToken }, 'unknown'],
+  ];
+  for (const [locationLike, expected] of samples) assert.equal(classifyZaloSdkEnvironment(locationLike), expected);
+  const api = client(async () => response({}), { tokenProvider: async () => privateToken });
+  assert.equal(await api.getZaloToken(), privateToken);
+});
+
+test('SDK native error codes retain safe category and stage without leaking provider details', async () => {
+  let requests = 0;
+  for (const [sdkCode, code] of [[-1401, 'zalo_auth_failed'], [-201, 'zalo_permission_denied'],
+    [-202, 'zalo_permission_denied'], [-2002, 'zalo_permission_denied'], [-1403, 'zalo_permission_required'],
+    [-1404, 'zalo_sdk_unsupported'], [-1408, 'timeout'], [-203, 'rate_limited'],
+    [-2003, 'zalo_auth_failed'], [-1409, 'zalo_auth_failed'], [-1410, 'zalo_auth_failed']]) {
+    const api = client(async () => { requests++; return response({}); }, { sdkLoader: async () => ({ getAccessToken: async () => {
+      throw { code: sdkCode, message: privateProviderError, detail: { token: privateToken }, cause: privateToken };
+    } }) });
+    await assert.rejects(api.getZaloToken(), error => {
+      safeFailure(code)(error);
+      assert.deepEqual(error.diagnostic, { stage: 'sdk-auth', environment: 'unknown', sdkCode });
+      assert.match(accountLinkMessage(error), new RegExp(`sdk-auth/unknown/Zalo ${sdkCode}`));
+      assert.doesNotMatch(error.message, /mở Mini App trong Zalo/);
+      return true;
+    });
+  }
+  assert.equal(requests, 0);
+});
+
+test('SDK loader failures are distinct from native auth failures and do not call native or API', async () => {
+  let nativeCalls = 0, requests = 0;
+  const noFetch = async () => { requests++; return response({}); };
+  const failedImport = client(noFetch, { sdkLoader: async () => { throw new Error(`${privateToken} ${privateProviderError}`); } });
+  await assert.rejects(failedImport.getZaloToken(), error => {
+    safeFailure('zalo_sdk_load_failed')(error);
+    assert.deepEqual(error.diagnostic, { stage: 'sdk-load', environment: 'unknown' }); return true;
+  });
+  const failedNative = client(noFetch, { sdkLoader: async () => ({ getAccessToken: async () => { nativeCalls++; throw undefined; } }) });
+  await assert.rejects(failedNative.getZaloToken(), error => {
+    safeFailure('zalo_auth_failed')(error);
+    assert.deepEqual(error.diagnostic, { stage: 'sdk-auth', environment: 'unknown' }); return true;
+  });
+  assert.equal(nativeCalls, 1); assert.equal(requests, 0);
+});
+
+test('missing SDK export and invalid token results have distinct safe diagnostics', async () => {
+  const malformedSdk = client(async () => response({}), { sdkLoader: async () => ({ unrelated: privateToken }) });
+  await assert.rejects(malformedSdk.getZaloToken(), safeFailure('zalo_sdk_load_failed'));
+  for (const value of ['', undefined, null, {}, 'not a token', 'x'.repeat(8193)]) {
+    const api = client(async () => response({}), { tokenProvider: async () => value });
+    await assert.rejects(api.getZaloToken(), error => {
+      safeFailure('zalo_token_missing')(error);
+      assert.deepEqual(error.diagnostic, { stage: 'sdk-result', environment: 'unknown' }); return true;
+    });
+  }
+});
+
+test('diagnostic values accept only approved enums and bounded numeric SDK codes', async () => {
+  for (const sdkCode of [privateToken, `${privateToken}\n-1401`, 100000, -100000, NaN, Infinity, {}, ['-1401']]) {
+    const api = client(async () => response({}), { tokenProvider: async () => { throw { code: sdkCode, message: privateProviderError }; } });
+    await assert.rejects(api.getZaloToken(), error => {
+      safeFailure('zalo_auth_failed')(error);
+      assert.deepEqual(error.diagnostic, { stage: 'sdk-auth', environment: 'unknown' }); return true;
+    });
+  }
+  const numericString = client(async () => response({}), { tokenProvider: async () => { throw { code: '-1401' }; } });
+  await assert.rejects(numericString.getZaloToken(), error => { assert.equal(error.diagnostic.sdkCode, -1401); return true; });
+  for (const diagnostic of [
+    { stage: privateToken, environment: 'web', sdkCode: -1401 },
+    { stage: { toString: () => 'sdk-auth', token: privateToken }, environment: 'web' },
+    { stage: 'sdk-auth', environment: privateProviderError },
+  ]) {
+    const error = new AccountLinkError('zalo_auth_failed', diagnostic);
+    assert.equal(error.diagnostic, undefined);
+    assert.ok(!accountLinkMessage(error).includes(privateToken));
+  }
+});
+
+test('a late SDK import cannot invoke getAccessToken after cancellation', async () => {
+  let releaseImport, nativeCalls = 0;
+  const scope = new AbortController();
+  const api = client(async () => response({}), { sdkLoader: () => new Promise(resolve => { releaseImport = resolve; }) });
+  const pending = api.getZaloToken(scope.signal);
+  scope.abort();
+  await assert.rejects(pending, safeFailure('cancelled'));
+  releaseImport({ getAccessToken: async () => { nativeCalls++; return privateToken; } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(nativeCalls, 0);
+});
+
+test('a late SDK import cannot invoke getAccessToken after timeout', async () => {
+  let releaseImport, nativeCalls = 0;
+  const api = client(async () => response({}), { timeoutMs: 4, sdkLoader: () => new Promise(resolve => { releaseImport = resolve; }) });
+  await assert.rejects(api.getZaloToken(), error => {
+    safeFailure('timeout')(error);
+    assert.deepEqual(error.diagnostic, { stage: 'sdk-load', environment: 'unknown' }); return true;
+  });
+  releaseImport({ getAccessToken: async () => { nativeCalls++; return privateToken; } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(nativeCalls, 0);
 });

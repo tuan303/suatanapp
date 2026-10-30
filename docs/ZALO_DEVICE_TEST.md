@@ -21,8 +21,8 @@ Không đặt App Secret hoặc JSON Firebase vào Mini App. Không cần cài l
 2. Dùng **Open Project**, chọn thư mục mã nguồn `miniapp` (trên máy đang phát triển: `C:\Users\Administrator\Downloads\DKAN\miniapp`).
 3. Trong **Config**, chọn Mini App ID `3378419117469948059`.
 4. Chọn **Login**, quét QR bằng tài khoản Zalo có quyền Admin/Developer để xác nhận quyền quản lý.
-5. Có thể chọn **Run → Device** để thử trên điện thoại, hoặc mở phần deploy của Extension và chọn loại phiên bản **Testing**. Mô tả gợi ý: `Kiểm thử liên kết tài khoản Zalo; API suatanapp; dữ liệu nghiệp vụ minh họa`.
-6. Sau khi deploy Testing thành công, dùng QR/deep link từ **Deploy Result** để mở đúng bản thử nghiệm trong ứng dụng Zalo. Trang localhost trên trình duyệt máy tính chỉ dùng để xem giao diện.
+5. Có thể chọn **Run → Device** để thử trên điện thoại, hoặc mở phần deploy của Extension và chọn loại phiên bản **Development** hoặc **Testing**. QR của bản Development đã deploy cũng là cách mở Mini App hợp lệ. Mô tả gợi ý cho Testing: `Kiểm thử liên kết tài khoản Zalo; API suatanapp; dữ liệu nghiệp vụ minh họa`.
+6. Sau khi deploy thành công, dùng QR/deep link từ **Deploy Result** để mở đúng bản vừa cập nhật trong ứng dụng Zalo. Trang localhost trên trình duyệt máy tính chỉ dùng để xem giao diện.
 
 Việc tạo bản Testing và kiểm thử thiết bị là bước khác với deploy web/API trên Vercel. Chưa gửi xét duyệt hoặc Publish cho CBNV ở bước này.
 
@@ -37,4 +37,12 @@ Việc tạo bản Testing và kiểm thử thiết bị là bước khác với
 
 Các tab đăng ký, hủy ăn, thực đơn, sự kiện, lịch sử và khảo sát bên ngoài hộp liên kết vẫn là **dữ liệu minh họa**. Việc liên kết thành công chưa xác nhận các nghiệp vụ này đã đọc/ghi dữ liệu thật.
 
-Tham khảo: [hướng dẫn Extension](https://marketplace.visualstudio.com/items?itemName=zalo-mini-app.zalo-mini-app), [quy trình Testing và phát hành](https://docs.zaloplatforms.com/docs/MA/intro/public-mini-program).
+## Khi bấm kiểm tra Zalo bị lỗi
+
+Bản `LK-20261030.2` hiển thị mã hỗ trợ đã lọc bên dưới lỗi: bước tải SDK/lấy phiên, loại môi trường và mã lỗi số do SDK cấp nếu có. Không hiển thị access token, nội dung lỗi thô hoặc dữ liệu tài khoản.
+
+Sau khi mã nguồn được cập nhật, bấm **Deploy → Development → Deploy** lại trong Extension, đóng Mini App cũ trên điện thoại và quét QR từ kết quả deploy mới. Kiểm tra dòng `Phiên bản liên kết: LK-20261030.2` trong hộp liên kết để xác nhận đã nhận bản mới. Deploy web/API trên Vercel không tự cập nhật bản đã tải lên Zalo.
+
+Nếu còn lỗi, gửi phần **Mã hỗ trợ** và phiên bản liên kết để đối chiếu. SDK `-1401` có nhiều nguyên nhân về xác thực nên chưa đủ để kết luận sai App Secret; các lỗi `-1403` (quyền API), `-1404` (phiên bản Zalo), `-1408` (quá thời gian chờ) cần xử lý theo mã thực tế. Không tự xin thêm quyền tên/ảnh/số điện thoại để khắc phục lỗi lấy ID: `getAccessToken` từ SDK 2.35 đã hỗ trợ ID mặc định.
+
+Tham khảo: [hướng dẫn Extension](https://marketplace.visualstudio.com/items?itemName=zalo-mini-app.zalo-mini-app), [quy trình Testing và phát hành](https://docs.zaloplatforms.com/docs/MA/intro/public-mini-program), [getAccessToken](https://docs.zaloplatforms.com/docs/MA/api/user/user-information/getAccessToken), [mã lỗi SDK](https://docs.zaloplatforms.com/docs/MA/api/errorCode).

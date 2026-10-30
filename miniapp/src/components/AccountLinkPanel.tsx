@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AccountLinkError, accountLinkMessage, createAccountLinkClient } from '../lib/accountLink';
 import type { LinkedSession } from '../lib/accountLink';
+import { ACCOUNT_LINK_BUILD } from '../lib/appVersion';
 
 type View = 'start' | 'code' | 'waiting' | 'linked';
 type Busy = 'check' | 'claim' | 'finish' | 'refresh' | 'logout' | null;
@@ -266,6 +267,6 @@ export function AccountLinkPanel({
       <button className="ma-link-secondary" disabled={!!busy} onClick={() => { void logout(); }}>{busy === 'logout' ? 'Đang đăng xuất…' : 'Đăng xuất phiên Mini App'}</button>
     </>}
 
-    <div className="ma-link-scope-note"><strong>Phạm vi bản phát triển</strong><p>Khung này chỉ xác minh liên kết tài khoản. Các tab đăng ký, hủy ăn, thực đơn và khảo sát bên ngoài vẫn dùng dữ liệu minh họa, chưa gửi thao tác nghiệp vụ thật.</p></div>
+    <div className="ma-link-scope-note"><strong>Phạm vi bản phát triển</strong><p>Khung này chỉ xác minh liên kết tài khoản. Các tab đăng ký, hủy ăn, thực đơn và khảo sát bên ngoài vẫn dùng dữ liệu minh họa, chưa gửi thao tác nghiệp vụ thật.</p><p>Phiên bản liên kết: <strong>{ACCOUNT_LINK_BUILD}</strong></p></div>
   </section>;
 }
