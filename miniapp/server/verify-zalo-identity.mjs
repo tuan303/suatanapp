@@ -23,6 +23,31 @@ const MESSAGES = Object.freeze({
 });
 
 const STAGES = Object.freeze(['transport', 'http', 'provider', 'response', 'timeout']);
+const PROVIDER_REASONS = Object.freeze(['ip_restricted', 'app_inactive', 'invalid_proof', 'invalid_token', 'unknown']);
+
+// These are troubleshooting hints, not an error-code dictionary. In particular,
+// Graph -501 has no documented meaning here. Never log provider text: it may
+// contain a token or identifying information, even when the request failed.
+function classifyProviderReason(body) {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(body, 'message');
+    const value = descriptor?.value;
+    if (typeof value !== 'string' || value.length > 2048) return 'unknown';
+    const message = value.toLowerCase().replace(/\s+/g, ' ');
+    const mentionsIp = /\bip(?: address(?:es)?)?\b/.test(message);
+    const mentionsCountry = /\b(?:country|region|geograph\w*|viet ?nam)\b/.test(message);
+    const explicitlyRestricted = /\b(?:not (?:allowed|supported|permitted)|denied|blocked|restricted|unsupported)\b/.test(message);
+    if ((mentionsIp || mentionsCountry) && explicitlyRestricted
+      || mentionsIp && /\b(?:outside|foreign|only)\b/.test(message) && /\bviet ?nam\b/.test(message)) return 'ip_restricted';
+    if (/\b(?:app|application)\b/.test(message)
+      && /\b(?:not (?:been )?activated|inactive|disabled)\b/.test(message)) return 'app_inactive';
+    if (/\b(?:appsecret[_ ]proof|hmac)\b/.test(message)
+      && /\b(?:invalid|incorrect|mismatch|missing|required)\b/.test(message)) return 'invalid_proof';
+    if (/\b(?:access[_ ]token|session[_ ](?:token|key))\b/.test(message)
+      && /\b(?:invalid|incorrect|expired|revoked)\b/.test(message)) return 'invalid_token';
+  } catch { /* Malformed diagnostics must not replace the provider failure. */ }
+  return 'unknown';
+}
 const boundedProviderCode = value => typeof value === 'number' && Number.isSafeInteger(value)
   && value >= -99999 && value <= 99999 ? value : undefined;
 const boundedHttpStatus = value => typeof value === 'number' && Number.isInteger(value)
@@ -34,9 +59,11 @@ function safeDiagnostic(value) {
     if (!STAGES.includes(stage)) return undefined;
     const providerCode = boundedProviderCode(value.providerCode);
     const httpStatus = boundedHttpStatus(value.httpStatus);
+    const providerReason = PROVIDER_REASONS.includes(value.providerReason) ? value.providerReason : undefined;
     return Object.freeze({ stage,
       ...(providerCode === undefined ? {} : { providerCode }),
-      ...(httpStatus === undefined ? {} : { httpStatus }) });
+      ...(httpStatus === undefined ? {} : { httpStatus }),
+      ...(providerReason === undefined ? {} : { providerReason }) });
   } catch { return undefined; }
 }
 
@@ -81,7 +108,7 @@ export async function verifyZaloIdentity(options = {}) {
   const controller = new AbortController();
   // Only these local values can become diagnostics. Never copy properties
   // from a thrown transport/parser error, even an instance of our own class.
-  let stage = 'transport', httpStatus, providerCode;
+  let stage = 'transport', httpStatus, providerCode, providerReason;
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
@@ -118,6 +145,7 @@ export async function verifyZaloIdentity(options = {}) {
       && Object.hasOwn(body, 'error') && body.error !== 0) {
       stage = 'provider';
       providerCode = boundedProviderCode(body.error);
+      providerReason = classifyProviderReason(body);
       throw new ZaloIdentityError('verification_failed');
     }
     if (!body || typeof body !== 'object' || Array.isArray(body)
@@ -136,7 +164,7 @@ export async function verifyZaloIdentity(options = {}) {
     // Do not attach `cause`, provider messages, response bodies or request data.
     // Even an injected transport throwing our Error class must not be trusted.
     throw new ZaloIdentityError(controller.signal.aborted ? 'timeout' : 'verification_failed', {
-      stage: controller.signal.aborted ? 'timeout' : stage, httpStatus, providerCode,
+      stage: controller.signal.aborted ? 'timeout' : stage, httpStatus, providerCode, providerReason,
     });
   } finally {
     clearTimeout(timer);

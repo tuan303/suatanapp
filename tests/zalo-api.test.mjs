@@ -9,7 +9,7 @@ import { ZaloIdentityError } from '../miniapp/server/verify-zalo-identity.mjs';
 
 const require = createRequire(import.meta.url);
 
-test('verification diagnostics log only fixed stages and bounded numeric provider metadata', () => {
+test('verification diagnostics log only fixed stages, fixed reasons and bounded numeric provider metadata', () => {
   const lines = [];
   const secret = 'TEST_ONLY_PRIVATE_DATA_MUST_NOT_APPEAR';
   const error = new ZaloIdentityError('verification_failed', {
@@ -22,6 +22,16 @@ test('verification diagnostics log only fixed stages and bounded numeric provide
   reportZaloVerificationFailure({ diagnostic: { stage: secret }, message: secret }, line => lines.push(line));
   assert.equal(lines.length, 1);
   assert.doesNotThrow(() => reportZaloVerificationFailure(error, () => { throw new Error(secret); }));
+  for (const providerReason of ['ip_restricted', 'app_inactive', 'invalid_proof', 'invalid_token', 'unknown', secret]) {
+    const reasonError = new ZaloIdentityError('verification_failed', { stage: 'provider', providerCode: -501,
+      httpStatus: 200, providerReason, message: secret });
+    const output = [];
+    reportZaloVerificationFailure(reasonError, line => output.push(line));
+    const diagnostic = JSON.parse(output[0].slice('DKAN_ZALO_VERIFY_FAILED '.length));
+    assert.deepEqual(diagnostic, { stage: 'provider', providerCode: -501, httpStatus: 200,
+      ...(providerReason === secret ? {} : { providerReason }) });
+    assert.ok(!output[0].includes(secret));
+  }
 });
 let createZaloHandler, AccountLinkError, createAccountLinkService;
 test.before(async () => {

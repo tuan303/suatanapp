@@ -25,6 +25,8 @@ export function reportZaloVerificationFailure(error, report = console.warn) {
     diagnostic.providerCode = source.providerCode;
   if (source && Number.isInteger(source.httpStatus) && source.httpStatus >= 100 && source.httpStatus <= 599)
     diagnostic.httpStatus = source.httpStatus;
+  if (source && ['ip_restricted', 'app_inactive', 'invalid_proof', 'invalid_token', 'unknown'].includes(source.providerReason))
+    diagnostic.providerReason = source.providerReason;
   try { report(`DKAN_ZALO_VERIFY_FAILED ${JSON.stringify(diagnostic)}`); }
   catch { /* Diagnostics must never change authentication or expose the error. */ }
 }

@@ -166,7 +166,7 @@ test('Graph denial carries only its bounded numeric error code and HTTP status',
     ok: true, status: 200, json: async () => ({ id: userId, error: -1241, message: `${token} ${secret}`, detail: { token } }),
   }))), error => {
     publicError('verification_failed')(error);
-    assert.deepEqual(error.diagnostic, { stage: 'provider', providerCode: -1241, httpStatus: 200 });
+    assert.deepEqual(error.diagnostic, { stage: 'provider', providerCode: -1241, httpStatus: 200, providerReason: 'unknown' });
     assert.equal(Object.isFrozen(error.diagnostic), true);
     assert.throws(() => { error.diagnostic.providerCode = -124; }, TypeError);
     assert.throws(() => { error.diagnostic = { stage: 'transport' }; }, TypeError);
@@ -193,7 +193,7 @@ test('provider error codes never coerce private text, objects or oversized ident
     await assert.rejects(verifyZaloIdentity(config(async () => ({ ok: true, status: 200,
       json: async () => ({ error: errorCode, id: userId, message: token }) }))), error => {
       publicError('verification_failed')(error);
-      assert.deepEqual(error.diagnostic, { stage: 'provider', httpStatus: 200 }); return true;
+      assert.deepEqual(error.diagnostic, { stage: 'provider', httpStatus: 200, providerReason: 'unknown' }); return true;
     });
   }
 });
@@ -223,6 +223,57 @@ test('diagnostic constructor strips unsupported stages, identifiers and arbitrar
     assert.ok(!JSON.stringify(error).includes(secret));
   }
   const safe = new ZaloIdentityError('verification_failed', { stage: 'http', httpStatus: 700, providerCode: 0.5,
-    id: userId, token, appSecret: secret, detail: { token } });
+    providerReason: token, id: userId, token, appSecret: secret, detail: { token } });
   assert.deepEqual(safe.diagnostic, { stage: 'http' });
+});
+
+test('provider hints classify explicit messages into fixed enums without exposing their contents', async () => {
+  const cases = [
+    ['IP address is not supported in this country', 'ip_restricted'],
+    ['Access from an IP outside Vietnam is not allowed', 'ip_restricted'],
+    ['Only IP addresses in Viet Nam may use this API', 'ip_restricted'],
+    ['Application has not been activated', 'app_inactive'],
+    ['App is disabled', 'app_inactive'],
+    ['Invalid appsecret_proof', 'invalid_proof'],
+    ['Appsecret proof mismatch', 'invalid_proof'],
+    ['Invalid access_token', 'invalid_token'],
+    ['Session key invalid. The user has revoked this session', 'invalid_token'],
+    ['Access token has expired', 'invalid_token'],
+    ['Unknown error', 'unknown'],
+    ['IP invalid', 'unknown'],
+    ['Application invalid', 'unknown'],
+    ['Request failed', 'unknown'],
+  ];
+  for (const [message, reason] of cases) {
+    await assert.rejects(verifyZaloIdentity(config(async () => ({ ok: true, status: 200,
+      json: async () => ({ error: -501, message: `${message}; private: ${token} ${secret}` }) }))), error => {
+      publicError('verification_failed')(error);
+      assert.deepEqual(error.diagnostic, { stage: 'provider', providerCode: -501, httpStatus: 200, providerReason: reason });
+      return true;
+    });
+  }
+});
+
+test('unknown -501 and malformed, inherited or oversized messages never imply an IP restriction', async () => {
+  for (const body of [{ error: -501 }, { error: -501, message: { toString() { assert.fail('must not coerce'); } } },
+    { error: -501, message: `IP blocked outside Vietnam ${'x'.repeat(2048)}` },
+    Object.assign(Object.create({ message: 'IP blocked outside Vietnam' }), { error: -501 }),
+    { error: -501, get message() { assert.fail('must not invoke provider message getter'); } }]) {
+    await assert.rejects(verifyZaloIdentity(config(async () => ({ ok: true, status: 200, json: async () => body }))), error => {
+      publicError('verification_failed')(error);
+      assert.deepEqual(error.diagnostic, { stage: 'provider', providerCode: -501, httpStatus: 200, providerReason: 'unknown' });
+      return true;
+    });
+  }
+});
+
+test('transport cannot forge a trusted provider reason and constructor rejects arbitrary reason text', async () => {
+  const forged = new ZaloIdentityError('verification_failed', { stage: 'provider', providerCode: -501, providerReason: 'ip_restricted' });
+  await assert.rejects(verifyZaloIdentity(config(async () => { throw forged; })), error => {
+    publicError('verification_failed')(error);
+    assert.deepEqual(error.diagnostic, { stage: 'transport' });
+    return true;
+  });
+  assert.deepEqual(new ZaloIdentityError('verification_failed', { stage: 'provider', providerReason: secret }).diagnostic,
+    { stage: 'provider' });
 });
