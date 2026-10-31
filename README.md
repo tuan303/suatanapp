@@ -24,6 +24,8 @@ Mã nguồn phần mềm đăng ký suất ăn của nhà trường, kèm bản 
 
 Bước thử nghiệm trên điện thoại: [hướng dẫn Device Mode / Testing và liên kết một tài khoản](docs/ZALO_DEVICE_TEST.md).
 
+Zalo Social mã `-501` yêu cầu IP máy chủ gọi Graph phải nằm ở Việt Nam. Đã chuẩn bị [gói API riêng cho Windows Server](docs/ZALO_VIETNAM_API.md) tại `api-suatan.nshm.vn`; chỉ bật `DKAN_ZALO_API_UPSTREAM_URL` trên Vercel sau khi DNS, HTTPS và API mới đã được kiểm tra. Giao diện và địa chỉ ngoài của Mini App được giữ nguyên khi chuyển API.
+
 ## Chạy trên máy tính
 
 Website và API, tại thư mục gốc:

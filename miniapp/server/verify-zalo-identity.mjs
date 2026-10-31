@@ -19,16 +19,19 @@ const MESSAGES = Object.freeze({
   invalid_config: 'Zalo identity verification is not configured correctly.',
   invalid_token: 'A valid Zalo access token is required.',
   verification_failed: 'Zalo identity could not be verified.',
+  ip_restricted: 'Zalo identity verification requires a server with an IP address in Vietnam.',
   timeout: 'Zalo identity verification timed out.',
 });
 
 const STAGES = Object.freeze(['transport', 'http', 'provider', 'response', 'timeout']);
 const PROVIDER_REASONS = Object.freeze(['ip_restricted', 'app_inactive', 'invalid_proof', 'invalid_token', 'unknown']);
 
-// These are troubleshooting hints, not an error-code dictionary. In particular,
-// Graph -501 has no documented meaning here. Never log provider text: it may
-// contain a token or identifying information, even when the request failed.
-function classifyProviderReason(body) {
+// The fixed Graph /me endpoint documents -501 as an out-of-Vietnam IP:
+// https://docs.zaloplatforms.com/docs/Social/social-api/tham-khao/ma-loi
+// Other reasons below are only message hints. Never log the provider text,
+// which can contain an IP, token or identifying information.
+function classifyProviderReason(body, providerCode) {
+  if (providerCode === -501) return 'ip_restricted';
   try {
     const descriptor = Object.getOwnPropertyDescriptor(body, 'message');
     const value = descriptor?.value;
@@ -145,7 +148,7 @@ export async function verifyZaloIdentity(options = {}) {
       && Object.hasOwn(body, 'error') && body.error !== 0) {
       stage = 'provider';
       providerCode = boundedProviderCode(body.error);
-      providerReason = classifyProviderReason(body);
+      providerReason = classifyProviderReason(body, providerCode);
       throw new ZaloIdentityError('verification_failed');
     }
     if (!body || typeof body !== 'object' || Array.isArray(body)
@@ -163,7 +166,9 @@ export async function verifyZaloIdentity(options = {}) {
   } catch {
     // Do not attach `cause`, provider messages, response bodies or request data.
     // Even an injected transport throwing our Error class must not be trusted.
-    throw new ZaloIdentityError(controller.signal.aborted ? 'timeout' : 'verification_failed', {
+    const code = controller.signal.aborted ? 'timeout'
+      : stage === 'provider' && providerCode === -501 ? 'ip_restricted' : 'verification_failed';
+    throw new ZaloIdentityError(code, {
       stage: controller.signal.aborted ? 'timeout' : stage, httpStatus, providerCode, providerReason,
     });
   } finally {

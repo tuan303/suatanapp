@@ -1,0 +1,14 @@
+# Use on the Vietnam Windows server when ports 80/443 are available.
+# If IIS already serves these ports, configure the hostname there instead.
+api-suatan.nshm.vn {
+    @zalo path /api/zalo
+    handle @zalo {
+        request_body {
+            max_size 8KB
+        }
+        reverse_proxy 127.0.0.1:3031 {
+            header_up -Cookie
+        }
+    }
+    respond 404
+}

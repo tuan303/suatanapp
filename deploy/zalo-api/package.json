@@ -1,0 +1,13 @@
+{
+  "name": "dkan-zalo-vietnam-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "API lien ket Zalo chay tren may chu Viet Nam",
+  "scripts": { "start": "node server.cjs" },
+  "engines": { "node": ">=22.12.0" },
+  "dependencies": {
+    "dotenv": "17.4.2",
+    "express": "5.2.1",
+    "firebase-admin": "13.10.0"
+  }
+}

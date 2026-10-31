@@ -59,6 +59,39 @@ test('feature disabled fails closed without opening Firebase or running service'
   const r = await request({ enabled: 'false' });
   assert.equal(r.statusCode, 503); assert.equal(r.calls, 0); assert.equal(r.payload.error.code, 'not_configured');
 });
+
+test('production handler can use the Vietnam API without local Firebase credentials and preserves all entry checks', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (url, options) => {
+    calls++;
+    assert.equal(url, 'https://api-suatan.nshm.vn/api/zalo');
+    assert.equal(options.headers.authorization, 'Bearer TEST_ONLY_ZALO_TOKEN');
+    assert.equal(options.headers.origin, 'https://suatanapp.vercel.app');
+    assert.deepEqual(JSON.parse(options.body), { action: 'mini.login' });
+    return Response.json({ linked: false });
+  };
+  try {
+    const handler = createZaloHandler({ env: { NODE_ENV: 'production', DKAN_ZALO_ENABLED: 'true',
+      DKAN_ZALO_API_UPSTREAM_URL: 'https://api-suatan.nshm.vn/api/zalo' } });
+    const invoke = async (origin, authorization = 'Bearer TEST_ONLY_ZALO_TOKEN') => {
+      const res = { headers: {}, statusCode: 0, payload: undefined,
+        setHeader(k, v) { this.headers[k] = v; }, status(v) { this.statusCode = v; return this; },
+        json(v) { this.payload = v; }, end() {} };
+      await handler({ method: 'POST', headers: { origin, authorization }, body: { action: 'mini.login' } }, res);
+      return res;
+    };
+    assert.equal((await invoke('https://evil.example')).statusCode, 403);
+    assert.equal((await invoke('https://h5.zdn.vn', '')).statusCode, 401);
+    assert.equal(calls, 0);
+    const success = await invoke('https://h5.zdn.vn');
+    assert.equal(success.statusCode, 200);
+    assert.equal(success.headers['Cache-Control'], 'no-store');
+    assert.equal(success.headers['Access-Control-Allow-Origin'], 'https://h5.zdn.vn');
+    assert.deepEqual(success.payload, { linked: false });
+    assert.equal(calls, 1);
+  } finally { globalThis.fetch = originalFetch; }
+});
 test('CORS only permits the school and Zalo origins, with no credential cookie access', async () => {
   for (const origin of ['https://evil.example', 'null', 'https://h5.zdn.vn.evil.example', 'http://127.0.0.1:4930',
     'http://suatanapp.vercel.app', 'https://suatanapp.vercel.app.evil.example', 'https://suatanapp-preview.vercel.app']) {

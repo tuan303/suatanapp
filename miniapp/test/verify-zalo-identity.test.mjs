@@ -246,22 +246,33 @@ test('provider hints classify explicit messages into fixed enums without exposin
   ];
   for (const [message, reason] of cases) {
     await assert.rejects(verifyZaloIdentity(config(async () => ({ ok: true, status: 200,
-      json: async () => ({ error: -501, message: `${message}; private: ${token} ${secret}` }) }))), error => {
+      json: async () => ({ error: -999, message: `${message}; private: ${token} ${secret}` }) }))), error => {
       publicError('verification_failed')(error);
-      assert.deepEqual(error.diagnostic, { stage: 'provider', providerCode: -501, httpStatus: 200, providerReason: reason });
+      assert.deepEqual(error.diagnostic, { stage: 'provider', providerCode: -999, httpStatus: 200, providerReason: reason });
       return true;
     });
   }
 });
 
-test('unknown -501 and malformed, inherited or oversized messages never imply an IP restriction', async () => {
-  for (const body of [{ error: -501 }, { error: -501, message: { toString() { assert.fail('must not coerce'); } } },
-    { error: -501, message: `IP blocked outside Vietnam ${'x'.repeat(2048)}` },
-    Object.assign(Object.create({ message: 'IP blocked outside Vietnam' }), { error: -501 }),
-    { error: -501, get message() { assert.fail('must not invoke provider message getter'); } }]) {
+test('unknown codes and malformed, inherited or oversized messages never imply an IP restriction', async () => {
+  for (const body of [{ error: -999 }, { error: -999, message: { toString() { assert.fail('must not coerce'); } } },
+    { error: -999, message: `IP blocked outside Vietnam ${'x'.repeat(2048)}` },
+    Object.assign(Object.create({ message: 'IP blocked outside Vietnam' }), { error: -999 }),
+    { error: -999, get message() { assert.fail('must not invoke provider message getter'); } }]) {
     await assert.rejects(verifyZaloIdentity(config(async () => ({ ok: true, status: 200, json: async () => body }))), error => {
       publicError('verification_failed')(error);
-      assert.deepEqual(error.diagnostic, { stage: 'provider', providerCode: -501, httpStatus: 200, providerReason: 'unknown' });
+      assert.deepEqual(error.diagnostic, { stage: 'provider', providerCode: -999, httpStatus: 200, providerReason: 'unknown' });
+      return true;
+    });
+  }
+});
+
+test('documented Graph -501 is a server IP restriction without reading or leaking provider text', async () => {
+  for (const body of [{ error: -501 }, { error: -501, message: `Personal information is limited due to IP address not inside Vietnam: ${token} ${secret}` },
+    { error: -501, id: userId, get message() { assert.fail('the documented code needs no message read'); } }]) {
+    await assert.rejects(verifyZaloIdentity(config(async () => ({ ok: true, status: 200, json: async () => body }))), error => {
+      publicError('ip_restricted')(error);
+      assert.deepEqual(error.diagnostic, { stage: 'provider', providerCode: -501, httpStatus: 200, providerReason: 'ip_restricted' });
       return true;
     });
   }

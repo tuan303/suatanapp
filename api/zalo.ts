@@ -1,5 +1,6 @@
 import { AccountLinkError } from '../miniapp/server/account-links.mjs';
 import { getLiveZaloService } from './_lib/zalo-runtime.mjs';
+import { getZaloUpstreamService } from './_lib/zalo-upstream.mjs';
 
 export const config = { maxDuration: 30 };
 const FIELDS: Record<string, string[]> = {
@@ -53,7 +54,7 @@ export function createZaloHandler({ env = process.env, getService }: Dependencie
       body = Object.fromEntries(FIELDS[action].map(field => [field, (raw as Record<string, unknown>)[field]]));
     } catch { return error(400, 'invalid_request', 'Thông tin yêu cầu không hợp lệ.'); }
     try {
-      const service = await (getService ? getService() : getLiveZaloService(env));
+      const service = await (getService ? getService() : getZaloUpstreamService(env) ?? getLiveZaloService(env));
       return res.status(200).json(await service.run(action, body, match[1]));
     } catch (err: unknown) {
       if (err instanceof AccountLinkError) return error(err.status, err.code, err.message);

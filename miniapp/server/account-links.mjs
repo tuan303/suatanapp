@@ -1,5 +1,6 @@
 /** SERVER ONLY: links verified school/Zalo identities; never issues Firebase or admin tokens. */
 import { createHash, randomBytes } from 'node:crypto';
+import { ZaloIdentityError } from './verify-zalo-identity.mjs';
 
 const FIVE_MINUTES = 5 * 60_000;
 const TEN_MINUTES = 10 * 60_000;
@@ -102,7 +103,13 @@ export function createAccountLinkService(options = {}) {
   async function zalo(bearer) {
     if (!ascii(bearer, 4096)) fail('unauthenticated');
     let identity;
-    try { identity = await verifyZaloToken(bearer); } catch { fail('unauthenticated'); }
+    try { identity = await verifyZaloToken(bearer); }
+    catch (error) {
+      // A documented server IP restriction is an availability problem. Asking
+      // the user to refresh a valid Zalo session cannot fix the server region.
+      if (error instanceof ZaloIdentityError && error.code === 'ip_restricted') fail('service_unavailable');
+      fail('unauthenticated');
+    }
     if (!identity || !numericId(identity.zaloUserId)) fail('unauthenticated');
     return identity.zaloUserId;
   }

@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createAccountLinkService, AccountLinkError } from '../server/account-links.mjs';
+import { ZaloIdentityError } from '../server/verify-zalo-identity.mjs';
 
 const APP = '1755714512504824995', MINI = '3378419117469948059';
 const ZALO_A = '123456789000000001', ZALO_B = '123456789000000002';
@@ -324,6 +325,23 @@ test('malformed credentials, IDs and unknown opaque tokens fail closed without a
   await rejects(f.run('mini.me', {}, 'A'.repeat(43)), 'session_expired', 401);
   await rejects(f.run('web.challengeStatus', { challengeId: '../other' }), 'invalid_request', 400);
   assert.equal(f.store.operations.some(([, path]) => path.includes('..')), false);
+});
+
+test('server IP restrictions return 503 and create no claims, links or sessions; untrusted failures stay 401', async () => {
+  const f = fixture();
+  const challenge = await f.run('web.createChallenge');
+  const before = copy([...f.store.docs]);
+  for (const exception of [new ZaloIdentityError('ip_restricted'),
+    Object.assign(new Error(PRIVATE), { code: 'ip_restricted' }),
+    new ZaloIdentityError('verification_failed')]) {
+    const service = createAccountLinkService({ ...f.options, verifyZaloToken: async () => { throw exception; } });
+    const trustedRestriction = exception instanceof ZaloIdentityError && exception.code === 'ip_restricted';
+    for (const [action, body] of [['mini.login', {}], ['mini.claim', { code: challenge.code }]]) {
+      await rejects(service.run(action, body, 'zalo-A'), trustedRestriction ? 'service_unavailable' : 'unauthenticated',
+        trustedRestriction ? 503 : 401);
+    }
+    assert.deepEqual([...f.store.docs], before);
+  }
 });
 
 test('malformed scoped metadata and one-sided links are rejected rather than overwritten', async () => {
