@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { getIdToken, onAuthStateChanged, reauthenticateWithPopup, type User } from 'firebase/auth';
+import { getIdToken, onAuthStateChanged, reauthenticateWithPopup, reload, sendEmailVerification, type User } from 'firebase/auth';
 import { auth, microsoftProvider } from '../lib/firebase';
 import { Header } from '../components/Header';
 import { Navigation } from '../components/Navigation';
@@ -9,7 +9,7 @@ import { Footer } from '../components/Footer';
 type WebAction = 'web.getLink' | 'web.createChallenge' | 'web.challengeStatus' | 'web.confirmLink' | 'web.revokeLink';
 type LinkState = { linked: boolean; zaloUserIdSuffix?: string; linkedAt?: number };
 type Challenge = { challengeId: string; code: string; expiresAt: number; state: 'waiting' | 'pending' | 'expired'; zaloUserIdSuffix?: string };
-type BusyAction = 'loading' | 'creating' | 'confirming' | 'revoking' | null;
+type BusyAction = 'loading' | 'creating' | 'confirming' | 'revoking' | 'sending-email' | null;
 const SCHOOL_DOMAIN = '@hoangmaistarschool.edu.vn';
 const LOGIN_URL = '/login?next=%2Flien-ket-zalo';
 
@@ -18,18 +18,46 @@ export function isSchoolMicrosoftUser(user: Pick<User, 'email' | 'providerData'>
     && user.providerData.some(provider => provider.providerId === 'microsoft.com');
 }
 
+export function needsSchoolEmailVerification(code: string, user: Pick<User, 'emailVerified'> | null) {
+  return code === 'email_verification_required' || (code === 'account_unavailable' && user?.emailVerified === false);
+}
+
+/** Refresh both the account record and JWT after verification in another tab. */
+export async function refreshSchoolLinkIdentity(user: User, options: {
+  stillCurrent: () => boolean; reloader?: typeof reload; tokenReader?: typeof getIdToken;
+}) {
+  if (!options.stillCurrent()) throw aborted();
+  await (options.reloader || reload)(user);
+  if (!options.stillCurrent()) throw aborted();
+  await (options.tokenReader || getIdToken)(user, true);
+  if (!options.stillCurrent()) throw aborted();
+}
+
+/** Invoked only by the signed-in user's explicit verification button. */
+export async function sendSchoolLinkVerification(user: User, options: {
+  stillCurrent: () => boolean; continueUrl: string; sender?: typeof sendEmailVerification;
+}) {
+  if (!options.stillCurrent()) throw aborted();
+  if (!isSchoolMicrosoftUser(user)) throw new ZaloLinkRequestError('account_unavailable', 403);
+  if (user.emailVerified) return;
+  await (options.sender || sendEmailVerification)(user, { url: options.continueUrl });
+  if (!options.stillCurrent()) throw aborted();
+}
+
 export function zaloLinkErrorMessage(code: string | undefined, status?: number) {
   if (code === 'not_configured') return 'Chức năng liên kết chưa được bật trên máy chủ.';
+  if (code === 'email_verification_required') return 'Email nhà trường cần được xác minh một lần trước khi liên kết Zalo.';
   if (status === 503 || code === 'service_unavailable') return 'Máy chủ chưa xử lý được yêu cầu liên kết. Vui lòng thử lại hoặc liên hệ bộ phận CNTT kiểm tra kết nối.';
   if (code === 'recent_login_required' || code === 'recent_auth_required') return 'Vui lòng xác minh lại tài khoản Microsoft trước khi thực hiện thao tác.';
   if (status === 401 || code === 'auth_required') return 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại bằng tài khoản Microsoft của trường.';
-  if (status === 403 || code === 'forbidden') return 'Tài khoản này chưa được phép liên kết Zalo. Vui lòng sử dụng tài khoản Microsoft của nhà trường đã được cấp quyền.';
+  if (status === 403 || code === 'forbidden') return 'Chưa xác minh được tài khoản Microsoft của nhà trường. Vui lòng đăng nhập lại; nếu vẫn gặp lỗi, liên hệ bộ phận CNTT.';
   if (code === 'challenge_unavailable' || code === 'challenge_expired') return 'Mã liên kết đã hết hạn hoặc không còn sử dụng được. Vui lòng tạo mã mới.';
   if (status === 409 || code === 'link_conflict') return 'Tài khoản đang có liên kết khác. Vui lòng kiểm tra liên kết hiện tại trước khi thử lại.';
   if (status === 429 || code === 'rate_limited') return 'Bạn vừa thực hiện nhiều yêu cầu. Vui lòng chờ một lát rồi thử lại.';
   if (code === 'auth/popup-blocked') return 'Trình duyệt đang chặn cửa sổ Microsoft. Vui lòng cho phép cửa sổ đăng nhập rồi thử lại.';
   if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') return 'Chưa hoàn tất xác minh Microsoft. Bạn có thể bấm lại khi sẵn sàng.';
   if (code === 'auth/user-mismatch') return 'Tài khoản Microsoft vừa chọn không khớp tài khoản đang đăng nhập.';
+  if (code === 'auth/too-many-requests') return 'Đã gửi nhiều yêu cầu xác minh. Vui lòng chờ vài phút và kiểm tra hộp thư trước khi gửi lại.';
   return 'Chưa thực hiện được yêu cầu. Vui lòng kiểm tra kết nối mạng và thử lại.';
 }
 
@@ -72,12 +100,13 @@ export interface ZaloAccountLinkViewProps {
   authLoading: boolean; user: Pick<User, 'email' | 'displayName' | 'providerData'> | null;
   link: LinkState | null; challenge: Challenge | null; now: number; busy: BusyAction;
   error: string | null; notice: string | null; revokeConfirm: boolean;
+  emailVerificationRequired?: boolean; verificationCooldown?: boolean; onSendVerification?: () => void;
   onReload: () => void; onCreate: () => void; onConfirm: () => void; onCopy: () => void;
   onRevokeRequest: () => void; onRevokeCancel: () => void; onRevoke: () => void;
 }
 
 export function ZaloAccountLinkView(props: ZaloAccountLinkViewProps) {
-  const { authLoading, user, link, challenge, now, busy, error, notice, revokeConfirm } = props;
+  const { authLoading, user, link, challenge, now, busy, error, notice, revokeConfirm, emailVerificationRequired } = props;
   const eligible = isSchoolMicrosoftUser(user as Pick<User, 'email' | 'providerData'> | null);
   const remaining = challenge ? Math.max(0, Math.ceil((challenge.expiresAt - now) / 1000)) : 0;
   const expired = !!challenge && (challenge.state === 'expired' || remaining === 0);
@@ -93,15 +122,24 @@ export function ZaloAccountLinkView(props: ZaloAccountLinkViewProps) {
             : <>
               {error && <p role="alert" className="mt-5 rounded-xl border border-error/20 bg-error-container p-4 text-sm text-on-error-container">{error}</p>}
               {notice && <p role="status" className="mt-5 rounded-xl bg-tertiary-container p-4 text-sm text-on-tertiary-container">{notice}</p>}
+              {emailVerificationRequired ? <div className="mt-5 rounded-xl border border-primary/20 bg-primary-container/40 p-4 sm:p-5">
+                <h3 className="font-semibold text-on-surface">Xác minh email nhà trường</h3>
+                <p className="mt-2 text-sm leading-relaxed text-on-surface-variant">Email cần được xác minh một lần để liên kết đúng tài khoản. Bấm gửi thư, mở hộp thư Microsoft của Thầy/Cô và chọn đường dẫn xác minh. Sau đó quay lại đây để tiếp tục.</p>
+                <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                  <button type="button" disabled={!!busy || props.verificationCooldown} onClick={props.onSendVerification} className={`${button} bg-primary text-on-primary hover:bg-primary-dark`}>{busy === 'sending-email' ? 'Đang gửi thư xác minh…' : props.verificationCooldown ? 'Đã gửi thư — kiểm tra hộp thư' : 'Gửi thư xác minh email'}</button>
+                  <button type="button" disabled={!!busy} onClick={props.onReload} className={`${button} border border-primary/20 bg-surface-container-lowest text-primary`}>{busy === 'loading' ? 'Đang kiểm tra…' : 'Tôi đã xác minh — kiểm tra lại'}</button>
+                </div>
+                <p className="mt-3 text-xs leading-relaxed text-on-surface-variant">Nếu chưa thấy thư, kiểm tra mục Thư rác. Sau khi xác minh, Thầy/Cô tiếp tục tạo mã và xác nhận liên kết Zalo.</p>
+              </div> : null}
               {busy === 'loading' && !link ? <p role="status" className="mt-5 text-sm text-on-surface-variant">Đang tải trạng thái liên kết…</p> : null}
               {link?.linked ? <div className="mt-5">
                 <div className="rounded-xl border border-tertiary/20 bg-tertiary-container/50 p-4"><p className="flex items-center gap-2 font-semibold text-on-tertiary-container"><span className="material-symbols-outlined text-[20px]" aria-hidden="true">check_circle</span>Đã liên kết Zalo</p><p className="mt-2 text-sm text-on-surface-variant">{link.zaloUserIdSuffix ? `Tài khoản Zalo có mã kết thúc bằng ••••${link.zaloUserIdSuffix}.` : 'Tài khoản Zalo đã được xác minh.'}</p>{link.linkedAt ? <p className="mt-1 text-sm text-on-surface-variant">Liên kết lúc {new Intl.DateTimeFormat('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', dateStyle: 'short', timeStyle: 'short' }).format(link.linkedAt)}.</p> : null}</div>
                 {revokeConfirm ? <div className="mt-4 rounded-xl border border-error/25 p-4"><p className="text-sm text-on-surface">Sau khi hủy, tài khoản Zalo này cần liên kết lại để sử dụng dữ liệu suất ăn của Thầy/Cô.</p><div className="mt-3 flex flex-col gap-2 sm:flex-row"><button type="button" disabled={!!busy} onClick={props.onRevoke} className={`${button} bg-error text-on-error`}>{busy === 'revoking' ? 'Đang xác minh và hủy…' : 'Xác nhận hủy liên kết'}</button><button type="button" disabled={!!busy} onClick={props.onRevokeCancel} className={`${button} border border-outline-variant text-on-surface`}>Giữ liên kết</button></div></div>
                   : <button type="button" disabled={!!busy} onClick={props.onRevokeRequest} className={`${button} mt-4 border border-error/25 text-error hover:bg-error-container`}>Hủy liên kết Zalo</button>}
               </div> : null}
-              {link && !link.linked && !challenge ? <div className="mt-5"><p className="text-sm text-on-surface-variant">Chưa liên kết Zalo. Tạo mã, nhập mã trong Mini App rồi quay lại trang này để xác nhận.</p><button type="button" disabled={!!busy} onClick={props.onCreate} className={`${button} mt-4 bg-primary text-on-primary hover:bg-primary-dark`}>{busy === 'creating' ? 'Đang xác minh Microsoft…' : 'Xác minh Microsoft và tạo mã'}</button></div> : null}
-              {!link && !busy ? <button type="button" onClick={props.onReload} className={`${button} mt-4 border border-outline-variant text-primary`}>Tải lại trạng thái</button> : null}
-              {challenge && !link?.linked ? <div className="mt-5 space-y-4">
+              {!emailVerificationRequired && link && !link.linked && !challenge ? <div className="mt-5"><p className="text-sm text-on-surface-variant">Chưa liên kết Zalo. Tạo mã, nhập mã trong Mini App rồi quay lại trang này để xác nhận.</p><button type="button" disabled={!!busy} onClick={props.onCreate} className={`${button} mt-4 bg-primary text-on-primary hover:bg-primary-dark`}>{busy === 'creating' ? 'Đang xác minh Microsoft…' : 'Xác minh Microsoft và tạo mã'}</button></div> : null}
+              {!emailVerificationRequired && !link && !busy ? <button type="button" onClick={props.onReload} className={`${button} mt-4 border border-outline-variant text-primary`}>Tải lại trạng thái</button> : null}
+              {!emailVerificationRequired && challenge && !link?.linked ? <div className="mt-5 space-y-4">
                 <div className={`rounded-xl border p-4 ${expired ? 'border-outline-variant bg-surface-container-low' : 'border-primary/20 bg-primary-container/40'}`}>
                   <p className="text-sm font-semibold text-on-surface">{expired ? 'Mã liên kết đã hết hạn' : 'Mã liên kết của Thầy/Cô'}</p>
                   {!expired ? <><code aria-label="Mã liên kết Zalo" className="mt-3 block select-all break-all rounded-lg bg-surface-container-lowest p-3 font-mono text-xl leading-relaxed text-primary">{challenge.code}</code><div className="mt-3 flex flex-wrap items-center justify-between gap-2"><p role="timer" aria-label="Thời gian còn lại của mã" className="text-sm text-on-surface-variant">Còn {Math.floor(remaining / 60)} phút {String(remaining % 60).padStart(2, '0')} giây</p><button type="button" disabled={!!busy} onClick={props.onCopy} className={`${button} border border-primary/20 bg-surface-container-lowest text-primary`}><span className="material-symbols-outlined text-[18px]" aria-hidden="true">content_copy</span>Sao chép mã</button></div></>
@@ -126,6 +164,8 @@ export default function ZaloAccountLink() {
   const [busy, setBusy] = useState<BusyAction>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [emailVerificationRequired, setEmailVerificationRequired] = useState(false);
+  const [verificationCooldown, setVerificationCooldown] = useState(false);
   const [revokeConfirm, setRevokeConfirm] = useState(false);
   const [pollPaused, setPollPaused] = useState(false);
   const [now, setNow] = useState(Date.now);
@@ -147,12 +187,22 @@ export default function ZaloAccountLink() {
     if (typeof result.linked !== 'boolean') throw new ZaloLinkRequestError('invalid_response', 502);
     const state = { linked: result.linked, zaloUserIdSuffix: suffix(result.zaloUserIdSuffix), linkedAt: typeof result.linkedAt === 'number' && Number.isFinite(result.linkedAt) && result.linkedAt > 0 ? result.linkedAt : undefined };
     setLink(state);
+    setEmailVerificationRequired(false);
     if (state.linked) setChallenge(null);
     return state;
   };
   const showFailure = (failure: unknown) => {
     if ((failure as { name?: string })?.name === 'AbortError') return;
+    if (failure instanceof ZaloLinkRequestError && needsSchoolEmailVerification(failure.code, userRef.current)) {
+      setEmailVerificationRequired(true); setLink(null); setChallenge(null); setError(null); return;
+    }
     setError(failure instanceof ZaloLinkRequestError ? failure.message : zaloLinkErrorMessage((failure as { code?: string })?.code));
+  };
+  const refreshLink = async (uid: string, ticket: number) => {
+    const owner = userRef.current;
+    if (!owner || owner.uid !== uid) throw aborted();
+    await refreshSchoolLinkIdentity(owner, { stillCurrent: () => current(ticket, uid) });
+    await readLink(uid, ticket);
   };
 
   useEffect(() => {
@@ -160,7 +210,7 @@ export default function ZaloAccountLink() {
     const unsubscribe = onAuthStateChanged(auth, next => {
       const changed = userRef.current?.uid !== next?.uid;
       userRef.current = next; setUser(next); setAuthLoading(false);
-      if (changed || !next) { invalidate(); busyRef.current = null; setLink(null); setChallenge(null); setBusy(null); setError(null); setNotice(null); setRevokeConfirm(false); setPollPaused(false); }
+      if (changed || !next) { invalidate(); busyRef.current = null; setLink(null); setChallenge(null); setBusy(null); setError(null); setNotice(null); setRevokeConfirm(false); setPollPaused(false); setEmailVerificationRequired(false); setVerificationCooldown(false); }
     });
     return () => { mounted.current = false; invalidate(); unsubscribe(); };
   }, []);
@@ -169,9 +219,15 @@ export default function ZaloAccountLink() {
     if (!user || !isSchoolMicrosoftUser(user)) return;
     const uid = user.uid, ticket = generation.current;
     busyRef.current = 'loading'; setBusy('loading'); setError(null);
-    void readLink(uid, ticket).catch(failure => { if (current(ticket, uid)) showFailure(failure); })
+    void refreshLink(uid, ticket).catch(failure => { if (current(ticket, uid)) showFailure(failure); })
       .finally(() => { if (current(ticket, uid)) { busyRef.current = null; setBusy(null); } });
   }, [user?.uid]);
+
+  useEffect(() => {
+    if (!verificationCooldown) return;
+    const timer = setTimeout(() => setVerificationCooldown(false), 60_000);
+    return () => clearTimeout(timer);
+  }, [verificationCooldown]);
 
   useEffect(() => {
     if (!challenge || challenge.state === 'expired') return;
@@ -225,6 +281,19 @@ export default function ZaloAccountLink() {
     await reauthenticateWithPopup(owner, microsoftProvider);
     if (!current(ticket, uid)) throw aborted();
   };
+  const sendVerification = () => {
+    if (verificationCooldown) return;
+    void perform('sending-email', async (uid, ticket) => {
+      const owner = userRef.current;
+      if (!owner || owner.uid !== uid) throw aborted();
+      await refreshSchoolLinkIdentity(owner, { stillCurrent: () => current(ticket, uid) });
+      if (owner.emailVerified) { await readLink(uid, ticket); return; }
+      await sendSchoolLinkVerification(owner, { stillCurrent: () => current(ticket, uid),
+        continueUrl: new URL('/lien-ket-zalo', window.location.origin).href });
+      setVerificationCooldown(true);
+      setNotice('Đã gửi thư xác minh đến email nhà trường đang hiển thị. Mở thư và bấm đường dẫn xác minh, sau đó chọn “Tôi đã xác minh — kiểm tra lại”.');
+    });
+  };
   const create = () => void perform('creating', async (uid, ticket) => {
     await reverify(uid, ticket);
     const result = await api('web.createChallenge', uid, ticket, undefined, true);
@@ -259,7 +328,8 @@ export default function ZaloAccountLink() {
 
   return <div className="mobile-app-shell min-w-0 flex flex-col md:pl-64"><Header /><Navigation />
     <ZaloAccountLinkView authLoading={authLoading} user={user} link={link} challenge={challenge} now={now} busy={busy} error={error} notice={notice} revokeConfirm={revokeConfirm}
-      onReload={() => void perform('loading', async (uid, ticket) => { await readLink(uid, ticket); })} onCreate={create} onConfirm={confirm} onCopy={copy}
+      emailVerificationRequired={emailVerificationRequired} verificationCooldown={verificationCooldown} onSendVerification={sendVerification}
+      onReload={() => void perform('loading', refreshLink)} onCreate={create} onConfirm={confirm} onCopy={copy}
       onRevokeRequest={() => setRevokeConfirm(true)} onRevokeCancel={() => setRevokeConfirm(false)} onRevoke={revoke} />
     <Footer /></div>;
 }

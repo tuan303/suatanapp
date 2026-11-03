@@ -35,6 +35,14 @@ Việc tạo bản Testing và kiểm thử thiết bị là bước khác với
 5. Trở lại Mini App; chỉ khi API xác minh thành công mới xuất hiện hồ sơ CBNV thật trong hộp liên kết. Không gửi mã liên kết, token hoặc khóa qua chat.
 6. Đóng/mở lại phần liên kết và kiểm tra đăng nhập bằng Zalo nhận đúng hồ sơ đã gắn. Có thể kiểm tra hủy liên kết trên web với tài khoản thử nghiệm được chủ tài khoản cho phép.
 
+### Website yêu cầu xác minh email nhà trường
+
+Firebase không tự coi email Microsoft dùng tên miền riêng của trường là email đã xác minh. Bước liên kết vẫn yêu cầu email đã xác minh; quyền quản trị trên web không thay thế bước này. Xem [tài liệu Firebase về email đã xác minh](https://firebase.google.com/docs/auth/users/#verified_email_addresses).
+
+Trên trang liên kết, bấm **Gửi thư xác minh email**, mở hộp thư Microsoft đang hiển thị và chọn đường dẫn xác minh (kiểm tra cả Thư rác). Quay lại trang và bấm **Tôi đã xác minh — kiểm tra lại**. Website tải lại trạng thái Firebase và làm mới phiên trước khi tiếp tục tạo mã. Thư chỉ gửi khi người dùng chủ động bấm nút, không gửi tự động khi mở trang.
+
+API trả `email_verification_required` cho email chưa xác minh, tách biệt với tài khoản bị khóa, sai tên miền hoặc sai phương thức đăng nhập. Nếu VPS còn chạy bản API cũ trả `account_unavailable`, website vẫn hướng dẫn xác minh khi tài khoản Firebase hiện tại chưa xác minh email. Không sửa thủ công `emailVerified`, cấp quyền quản trị hoặc thay App Secret để bỏ qua bước này.
+
 Các tab đăng ký, hủy ăn, thực đơn, sự kiện, lịch sử và khảo sát bên ngoài hộp liên kết vẫn là **dữ liệu minh họa**. Việc liên kết thành công chưa xác nhận các nghiệp vụ này đã đọc/ghi dữ liệu thật.
 
 ## Khi bấm kiểm tra Zalo bị lỗi

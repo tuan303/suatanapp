@@ -72,12 +72,14 @@ test('successful RPC objects preserve approval, session and personal-profile fie
 test('only known upstream error codes with their expected HTTP status become fixed public errors', async () => {
   for (const [status, code, expected] of [[401, 'unauthenticated', 'unauthenticated'], [401, 'auth_required', 'unauthenticated'],
     [409, 'link_conflict', 'link_conflict'], [403, 'recent_auth_required', 'recent_auth_required'],
+    [403, 'email_verification_required', 'email_verification_required'],
     [429, 'rate_limited', 'rate_limited'], [503, 'not_configured', 'service_unavailable']]) {
     await assert.rejects(service(async () => json({ error: { code, message: PRIVATE, details: PRIVATE } }, status))
       .run('mini.login', {}, PRIVATE), publicError(status, expected));
   }
   for (const [status, body] of [[500, { error: { code: PRIVATE, message: PRIVATE } }],
     [403, { error: { code: 'unauthenticated', message: PRIVATE } }], [401, { error: PRIVATE }],
+    [401, { error: { code: 'email_verification_required', message: PRIVATE } }],
     [200, { error: { code: 'unauthenticated', message: PRIVATE } }]])
     await assert.rejects(service(async () => json(body, status)).run('mini.login', {}, PRIVATE), publicError());
 });

@@ -52,14 +52,31 @@ export function readZaloRuntimeConfig(env = {}) {
   return { appId, miniAppId, appSecret, credential };
 }
 
+function validateSchoolRecord(uid, user) {
+  if (typeof uid !== 'string' || !UID.test(uid) || !user || user.uid !== uid || user.disabled === true
+    || typeof user.email !== 'string' || !SCHOOL_EMAIL.test(user.email)
+    || !Array.isArray(user.providerData) || !user.providerData.some(item => item?.providerId === 'microsoft.com')) accountUnavailable();
+}
+
+const emailVerificationRequired = () => { throw new AccountLinkError(403, 'email_verification_required'); };
+
+/** Recheck the current Admin SDK account on every linked Mini App profile read. */
+export function validateSchoolProfileAccount(uid, user) {
+  validateSchoolRecord(uid, user);
+  if (user.emailVerified !== true) emailVerificationRequired();
+  return { uid, email: user.email.toLowerCase() };
+}
+
 /** Verified SDK records only. Refreshing a JWT must not replace recent auth_time. */
 export function validateSchoolAccount(decoded, user, { requireRecent = false, nowMs = Date.now() } = {}) {
-  if (!decoded || !user || !UID.test(decoded.uid || '') || user.uid !== decoded.uid
-    || user.disabled === true || user.emailVerified !== true || decoded.email_verified !== true
-    || typeof decoded.email !== 'string' || !SCHOOL_EMAIL.test(decoded.email)
-    || typeof user.email !== 'string' || user.email.toLowerCase() !== decoded.email.toLowerCase()
-    || decoded.firebase?.sign_in_provider !== 'microsoft.com'
-    || !Array.isArray(user.providerData) || !user.providerData.some(item => item.providerId === 'microsoft.com')) accountUnavailable();
+  validateSchoolRecord(decoded?.uid, user);
+  if (typeof decoded.email !== 'string' || !SCHOOL_EMAIL.test(decoded.email)
+    || user.email.toLowerCase() !== decoded.email.toLowerCase()
+    || decoded.firebase?.sign_in_provider !== 'microsoft.com') accountUnavailable();
+  // Microsoft sign-in for a school-owned domain does not automatically verify
+  // its mailbox in Firebase. Keep the verification requirement and surface the
+  // next step separately from a disabled, mismatched or non-school identity.
+  if (user.emailVerified !== true || decoded.email_verified !== true) emailVerificationRequired();
   if (requireRecent && (!Number.isSafeInteger(decoded.auth_time) || decoded.auth_time * 1000 > nowMs + 60_000
     || nowMs - decoded.auth_time * 1000 > 10 * 60_000)) throw new AccountLinkError(403, 'recent_auth_required');
   return { uid: decoded.uid, email: user.email.toLowerCase() };
@@ -110,10 +127,9 @@ export async function getLiveZaloService(env = process.env) {
         catch (error) { reportZaloVerificationFailure(error); throw error; }
       },
       async getSchoolProfile(uid) {
-        if (!UID.test(uid)) accountUnavailable();
+        if (typeof uid !== 'string' || !UID.test(uid)) accountUnavailable();
         const user = await auth.getUser(uid);
-        if (user.disabled || !user.emailVerified || !SCHOOL_EMAIL.test(user.email || '')
-          || !user.providerData.some(provider => provider.providerId === 'microsoft.com')) accountUnavailable();
+        validateSchoolProfileAccount(uid, user);
         const snapshot = await db.collection('staff').doc(uid).get();
         const staff = snapshot.exists ? snapshot.data() : {};
         return sanitizeSchoolProfile(staff, user);

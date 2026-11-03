@@ -11,6 +11,7 @@ const ERRORS = Object.freeze({
   invalid_request: [400, 'Thông tin yêu cầu không hợp lệ.'],
   unauthenticated: [401, 'Vui lòng đăng nhập lại để tiếp tục.'],
   recent_auth_required: [403, 'Vui lòng xác thực lại tài khoản nhà trường trước khi tiếp tục.'],
+  email_verification_required: [403, 'Vui lòng xác minh địa chỉ email nhà trường trước khi liên kết Zalo.'],
   account_unavailable: [403, 'Tài khoản nhà trường hiện không thể sử dụng.'],
   challenge_unavailable: [409, 'Yêu cầu liên kết không còn khả dụng. Vui lòng tạo mã mới.'],
   link_conflict: [409, 'Tài khoản đã có liên kết khác. Vui lòng kiểm tra hoặc hủy liên kết của chính mình.'],
@@ -94,6 +95,7 @@ export function createAccountLinkService(options = {}) {
     try { identity = await verifySchoolToken(bearer, { requireRecent }); }
     catch (error) {
       if (error?.code === 'recent_auth_required' || error?.code === 'auth/requires-recent-login') fail('recent_auth_required');
+      if (error?.code === 'email_verification_required') fail('email_verification_required');
       if (error?.code === 'account_unavailable' || error?.code === 'auth/user-disabled') fail('account_unavailable');
       fail('unauthenticated');
     }
@@ -115,7 +117,10 @@ export function createAccountLinkService(options = {}) {
   }
   async function profile(uid) {
     let value;
-    try { value = await getSchoolProfile(uid); } catch { fail('account_unavailable'); }
+    try { value = await getSchoolProfile(uid); } catch (error) {
+      if (error?.code === 'email_verification_required') fail('email_verification_required');
+      fail('account_unavailable');
+    }
     if (!value || !schoolEmail(value.email)) fail('account_unavailable');
     return { fullName: text(value.fullName, 160), employeeId: text(value.employeeId, 40),
       department: text(value.department, 160), email: value.email.toLowerCase() };

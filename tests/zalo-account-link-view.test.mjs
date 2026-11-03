@@ -64,6 +64,55 @@ test('lỗi dịch vụ không bị diễn giải thành cờ tính năng đang 
   assert.doesNotMatch(failed, /chưa được bật/);
 });
 
+test('email chưa xác minh có bước gửi thư và kiểm tra lại, không mở thao tác tạo mã', () => {
+  const html = render({ link: null, emailVerificationRequired: true });
+  assert.match(html, /Xác minh email nhà trường/);
+  assert.match(html, /Gửi thư xác minh email/);
+  assert.match(html, /Tôi đã xác minh — kiểm tra lại/);
+  assert.doesNotMatch(html, /Xác minh Microsoft và tạo mã|Tải lại trạng thái|chưa được phép liên kết/);
+  const pending = render({ link: null, emailVerificationRequired: true, verificationCooldown: true });
+  assert.match(pending, /disabled=""[^>]*>Đã gửi thư — kiểm tra hộp thư/);
+  assert.match(component.zaloLinkErrorMessage('email_verification_required', 403), /Email nhà trường cần được xác minh/);
+  assert.doesNotMatch(component.zaloLinkErrorMessage('account_unavailable', 403), /đã được cấp quyền/);
+  assert.equal(component.needsSchoolEmailVerification('email_verification_required', { emailVerified: true }), true);
+  assert.equal(component.needsSchoolEmailVerification('account_unavailable', { emailVerified: false }), true);
+  assert.equal(component.needsSchoolEmailVerification('account_unavailable', { emailVerified: true }), false);
+  assert.equal(component.needsSchoolEmailVerification('account_unavailable', null), false);
+  assert.equal(component.needsSchoolEmailVerification('service_unavailable', { emailVerified: false }), false);
+});
+
+test('sau xác minh email phải tải lại Auth record và ép làm mới JWT trước khi tiếp tục', async () => {
+  const calls = [], owner = { ...user, uid: 'school-user', emailVerified: false };
+  await component.refreshSchoolLinkIdentity(owner, {
+    stillCurrent: () => true,
+    reloader: async actual => { assert.equal(actual, owner); actual.emailVerified = true; calls.push('reload'); },
+    tokenReader: async (actual, force) => { assert.equal(actual.emailVerified, true); assert.equal(force, true); calls.push('token'); return 'TEST_ONLY'; },
+  });
+  assert.deepEqual(calls, ['reload', 'token']);
+  let current = true, tokenReads = 0;
+  await assert.rejects(component.refreshSchoolLinkIdentity(owner, {
+    stillCurrent: () => current, reloader: async () => { current = false; },
+    tokenReader: async () => { tokenReads++; return 'OLD_TEST_ONLY'; },
+  }), failure => failure.name === 'AbortError');
+  assert.equal(tokenReads, 0);
+});
+
+test('gửi xác minh chỉ dùng tài khoản Microsoft hiện tại, không gửi tự động hoặc cho email tùy ý', async () => {
+  const owner = { ...user, uid: 'school-user', emailVerified: false }, sent = [];
+  const options = { stillCurrent: () => true, continueUrl: 'https://suatanapp.vercel.app/lien-ket-zalo',
+    sender: async (actual, settings) => { sent.push({ actual, settings }); } };
+  await component.sendSchoolLinkVerification(owner, options);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].actual, owner);
+  assert.deepEqual(sent[0].settings, { url: options.continueUrl });
+  await component.sendSchoolLinkVerification({ ...owner, emailVerified: true }, options);
+  assert.equal(sent.length, 1);
+  await assert.rejects(component.sendSchoolLinkVerification({ ...owner, providerData: [] }, options), failure => failure.code === 'account_unavailable');
+  await assert.rejects(component.sendSchoolLinkVerification({ ...owner, email: 'demo@outside.example' }, options), failure => failure.code === 'account_unavailable');
+  await assert.rejects(component.sendSchoolLinkVerification(owner, { ...options, stillCurrent: () => false }), failure => failure.name === 'AbortError');
+  assert.equal(sent.length, 1);
+});
+
 test('chỉ hiển thị mã trong nội dung và sao chép, không đưa mã hoặc challenge vào URL', () => {
   const html = render({ challenge });
   assert.match(html, /SAMPLE_link_CODE_12345678/);

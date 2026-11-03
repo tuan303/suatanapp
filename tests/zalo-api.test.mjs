@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
-import { readZaloRuntimeConfig, validateSchoolAccount, createFirestoreLinkStore, sanitizeSchoolProfile, reportZaloVerificationFailure } from '../api/_lib/zalo-runtime.mjs';
+import { readZaloRuntimeConfig, validateSchoolAccount, validateSchoolProfileAccount, createFirestoreLinkStore, sanitizeSchoolProfile, reportZaloVerificationFailure } from '../api/_lib/zalo-runtime.mjs';
 import { ZaloIdentityError } from '../miniapp/server/verify-zalo-identity.mjs';
 
 const require = createRequire(import.meta.url);
@@ -131,6 +131,10 @@ test('limits body size, then forwards only exact action fields and raw bearer', 
 test('returns trusted service errors and sanitizes unexpected errors without exposing secrets', async () => {
   const conflict = await request({ serviceError: new AccountLinkError(409, 'link_conflict') });
   assert.equal(conflict.statusCode, 409); assert.equal(conflict.payload.error.code, 'link_conflict');
+  const verification = await request({ serviceError: new AccountLinkError(403, 'email_verification_required') });
+  assert.equal(verification.statusCode, 403);
+  assert.equal(verification.payload.error.code, 'email_verification_required');
+  assert.match(verification.payload.error.message, /xác minh địa chỉ email/);
   const failed = await request({ serviceError: new Error('TEST_ONLY_SECRET_AND_PRIVATE_KEY') });
   assert.equal(failed.statusCode, 503); assert.ok(!JSON.stringify(failed).includes('TEST_ONLY_SECRET_AND_PRIVATE_KEY'));
 });
@@ -158,16 +162,82 @@ const user = () => ({ uid: 'user_A', email: 'teacher@hoangmaistarschool.edu.vn',
 test('school identity requires verified Microsoft email, same UID and enabled account', () => {
   assert.deepEqual(validateSchoolAccount(decoded(), user(), { requireRecent: true, nowMs }),
     { uid: 'user_A', email: 'teacher@hoangmaistarschool.edu.vn' });
-  for (const mutation of [{ disabled: true }, { uid: 'user_B' }, { emailVerified: false },
+  for (const mutation of [{ disabled: true }, { uid: 'user_B' },
     { email: 'teacher@gmail.com' }, { providerData: [{ providerId: 'google.com' }] }])
-    assert.throws(() => validateSchoolAccount(decoded(), { ...user(), ...mutation }), /Tài khoản/);
-  assert.throws(() => validateSchoolAccount({ ...decoded(), firebase: { sign_in_provider: 'custom' } }, user()), /Tài khoản/);
+    assert.throws(() => validateSchoolAccount(decoded(), { ...user(), ...mutation }), error => error.code === 'account_unavailable');
+  assert.throws(() => validateSchoolAccount({ ...decoded(), firebase: { sign_in_provider: 'custom' } }, user()), error => error.code === 'account_unavailable');
+});
+test('custom school-domain Microsoft accounts require mailbox verification without being labeled as denied permission', () => {
+  for (const [recordFlag, tokenFlag] of [[false, false], [false, true], [true, false], [undefined, undefined], ['true', true], [true, 1]]) {
+    assert.throws(() => validateSchoolAccount({ ...decoded(), email_verified: tokenFlag }, { ...user(), emailVerified: recordFlag }),
+      error => error.status === 403 && error.code === 'email_verification_required');
+  }
+  // A refreshed, verified identity passes; no policy or provider bypass is added.
+  assert.deepEqual(validateSchoolAccount(decoded(), user()), { uid: 'user_A', email: 'teacher@hoangmaistarschool.edu.vn' });
+});
+test('unverified flags never mask invalid identity, UID, school domain, Microsoft provider or disabled status', () => {
+  const pendingToken = { ...decoded(), email_verified: false }, pendingUser = { ...user(), emailVerified: false };
+  for (const [token, record] of [[pendingToken, { ...pendingUser, disabled: true }],
+    [pendingToken, { ...pendingUser, uid: 'user_B' }],
+    [{ ...pendingToken, uid: '__reserved__' }, { ...pendingUser, uid: '__reserved__' }],
+    [{ ...pendingToken, uid: 123 }, { ...pendingUser, uid: 123 }],
+    [pendingToken, { ...pendingUser, email: 'other@hoangmaistarschool.edu.vn' }],
+    [{ ...pendingToken, email: 'teacher@outside.example' }, { ...pendingUser, email: 'teacher@outside.example' }],
+    [{ ...pendingToken, firebase: { sign_in_provider: 'google.com' } }, pendingUser],
+    [pendingToken, { ...pendingUser, providerData: [{ providerId: 'google.com' }] }],
+    [pendingToken, { ...pendingUser, providerData: [null] }],
+    [null, pendingUser], [pendingToken, null]]) {
+    assert.throws(() => validateSchoolAccount(token, record), error => error.status === 403 && error.code === 'account_unavailable');
+  }
+});
+test('Mini App profile reads use the same current account verification, UID, provider, domain and disabled checks', () => {
+  assert.deepEqual(validateSchoolProfileAccount('user_A', user()), { uid: 'user_A', email: 'teacher@hoangmaistarschool.edu.vn' });
+  for (const emailVerified of [false, undefined, 'true'])
+    assert.throws(() => validateSchoolProfileAccount('user_A', { ...user(), emailVerified }),
+      error => error.status === 403 && error.code === 'email_verification_required');
+  for (const mutation of [{ uid: 'user_B' }, { disabled: true }, { email: 'teacher@gmail.com' },
+    { providerData: [] }, { providerData: [null] }, { providerData: null }])
+    assert.throws(() => validateSchoolProfileAccount('user_A', { ...user(), emailVerified: false, ...mutation }),
+      error => error.status === 403 && error.code === 'account_unavailable');
 });
 test('fresh JWT iat does not bypass old or future authentication time for confirmation', () => {
   for (const auth_time of [Math.floor(nowMs / 1000) - 601, Math.floor(nowMs / 1000) + 120, undefined]) {
     assert.throws(() => validateSchoolAccount({ ...decoded(), auth_time, iat: nowMs / 1000 }, user(), { requireRecent: true, nowMs }),
       error => error.code === 'recent_auth_required');
   }
+});
+
+test('unverified school RPC requests preserve actionable error and cannot read or write link storage', async () => {
+  let storageCalls = 0;
+  const unexpectedStorage = async () => { storageCalls++; throw new Error('Storage must not run before verification'); };
+  const service = createAccountLinkService({
+    appId: '123456789', miniAppId: '987654321', now: () => nowMs,
+    store: { get: unexpectedStorage, runTransaction: unexpectedStorage },
+    verifySchoolToken: async () => validateSchoolAccount({ ...decoded(), email_verified: false }, { ...user(), emailVerified: false }),
+    verifyZaloToken: async () => { throw new Error('Zalo verification must not run'); },
+    getSchoolProfile: async () => { throw new Error('Profile must not run'); },
+  });
+  for (const [action, body] of [['web.getLink', {}], ['web.createChallenge', {}], ['web.revokeLink', {}],
+    ['web.challengeStatus', { challengeId: 'a'.repeat(64) }], ['web.confirmLink', { challengeId: 'a'.repeat(64) }]])
+    await assert.rejects(service.run(action, body, 'TEST_ONLY_SCHOOL_TOKEN'), error =>
+      error.status === 403 && error.code === 'email_verification_required');
+  assert.equal(storageCalls, 0);
+});
+
+test('linked Zalo login cannot create a session when the current school mailbox becomes unverified', async () => {
+  const link = { appId: '123456789', miniAppId: '987654321', uid: 'user_A', zaloUserId: '123456789123456789',
+    version: 'a'.repeat(32), linkedAt: nowMs - 1000 };
+  let transactionCalls = 0;
+  const service = createAccountLinkService({ appId: link.appId, miniAppId: link.miniAppId, now: () => nowMs,
+    store: { get: async path => { assert.equal(path, `zalo_links/${link.appId}_${link.zaloUserId}`); return link; },
+      runTransaction: async () => { transactionCalls++; throw new Error('No session may be created'); } },
+    verifySchoolToken: async () => { throw new Error('School token verification must not run'); },
+    verifyZaloToken: async () => ({ zaloUserId: link.zaloUserId }),
+    getSchoolProfile: async uid => validateSchoolProfileAccount(uid, { ...user(), emailVerified: false }),
+  });
+  await assert.rejects(service.run('mini.login', {}, 'TEST_ONLY_ZALO_TOKEN'), error =>
+    error.status === 403 && error.code === 'email_verification_required');
+  assert.equal(transactionCalls, 0);
 });
 test('profile names fall back after sanitizing empty or malformed fields and never return roles', () => {
   const account = { ...user(), displayName: 'Giáo viên mẫu' };

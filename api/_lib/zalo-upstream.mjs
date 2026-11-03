@@ -14,6 +14,7 @@ const ERROR_CODES = Object.freeze({
   invalid_config: [500, 'invalid_config'], invalid_action: [400, 'invalid_action'],
   invalid_request: [400, 'invalid_request'], unauthenticated: [401, 'unauthenticated'],
   auth_required: [401, 'unauthenticated'], recent_auth_required: [403, 'recent_auth_required'],
+  email_verification_required: [403, 'email_verification_required'],
   account_unavailable: [403, 'account_unavailable'], challenge_unavailable: [409, 'challenge_unavailable'],
   link_conflict: [409, 'link_conflict'], rate_limited: [429, 'rate_limited'],
   session_expired: [401, 'session_expired'], service_unavailable: [503, 'service_unavailable'],
