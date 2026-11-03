@@ -43,7 +43,7 @@ Trên trang liên kết, bấm **Gửi thư xác minh email**, mở hộp thư M
 
 API trả `email_verification_required` cho email chưa xác minh, tách biệt với tài khoản bị khóa, sai tên miền hoặc sai phương thức đăng nhập. Nếu VPS còn chạy bản API cũ trả `account_unavailable`, website vẫn hướng dẫn xác minh khi tài khoản Firebase hiện tại chưa xác minh email. Không sửa thủ công `emailVerified`, cấp quyền quản trị hoặc thay App Secret để bỏ qua bước này.
 
-Các tab đăng ký, hủy ăn, thực đơn, sự kiện, lịch sử và khảo sát bên ngoài hộp liên kết vẫn là **dữ liệu minh họa**. Việc liên kết thành công chưa xác nhận các nghiệp vụ này đã đọc/ghi dữ liệu thật.
+Bản liên kết cũ `LK-20261030.2` vẫn dùng dữ liệu minh họa ngoài hộp tài khoản. Bản `LIVE-20261103.1` đã chuyển các tab sang API nghiệp vụ; cần cập nhật cả VPS và Mini App theo [hướng dẫn dữ liệu thật](ZALO_LIVE_DATA.md). Việc liên kết thành công chưa xác nhận các nghiệp vụ mới đã được triển khai hoặc đối chiếu trên thiết bị.
 
 ## Khi bấm kiểm tra Zalo bị lỗi
 

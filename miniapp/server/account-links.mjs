@@ -1,6 +1,7 @@
 /** SERVER ONLY: links verified school/Zalo identities; never issues Firebase or admin tokens. */
 import { createHash, randomBytes } from 'node:crypto';
 import { ZaloIdentityError } from './verify-zalo-identity.mjs';
+import { MEAL_ERROR_STATUS } from '../shared/meal-contract.mjs';
 
 const FIVE_MINUTES = 5 * 60_000;
 const TEN_MINUTES = 10 * 60_000;
@@ -18,6 +19,16 @@ const ERRORS = Object.freeze({
   rate_limited: [429, 'Bạn đã tạo quá nhiều mã liên kết. Vui lòng thử lại sau.'],
   session_expired: [401, 'Phiên Mini App đã hết hạn. Vui lòng đăng nhập lại.'],
   service_unavailable: [503, 'Chưa thể xử lý liên kết tài khoản. Vui lòng thử lại sau.'],
+  profile_incomplete: [MEAL_ERROR_STATUS.profile_incomplete, 'Hồ sơ nhà trường chưa đủ thông tin để sử dụng suất ăn. Vui lòng liên hệ quản trị.'],
+  registration_closed: [MEAL_ERROR_STATUS.registration_closed, 'Đã hết thời gian đăng ký suất ăn tháng này.'],
+  registration_blocked: [MEAL_ERROR_STATUS.registration_blocked, 'Tài khoản đang bị hạn chế đăng ký suất ăn trong tháng này.'],
+  already_registered: [MEAL_ERROR_STATUS.already_registered, 'Thầy/Cô đã đăng ký suất ăn tháng này. Vui lòng tải lại dữ liệu.'],
+  cancellation_closed: [MEAL_ERROR_STATUS.cancellation_closed, 'Đã hết thời gian hủy suất ăn đã chọn.'],
+  not_registered: [MEAL_ERROR_STATUS.not_registered, 'Không có suất ăn đã đăng ký phù hợp để hủy.'],
+  already_cancelled: [MEAL_ERROR_STATUS.already_cancelled, 'Suất ăn đã được hủy trước đó. Vui lòng tải lại dữ liệu.'],
+  event_closed: [MEAL_ERROR_STATUS.event_closed, 'Sự kiện không còn mở đăng ký suất ăn.'],
+  already_responded: [MEAL_ERROR_STATUS.already_responded, 'Thầy/Cô đã gửi phản hồi trước đó. Vui lòng tải lại dữ liệu.'],
+  survey_closed: [MEAL_ERROR_STATUS.survey_closed, 'Khảo sát hiện chưa mở hoặc đã hết thời gian trả lời.'],
 });
 const publicErrors = new WeakMap();
 
@@ -280,19 +291,29 @@ export function createAccountLinkService(options = {}) {
     return { state: status.state, expiresAt: status.expiresAt }; // Never returns a session or another identity.
   }
 
-  async function me(bearer) {
+  async function authorizeMiniSession(bearer) {
     if (!tokenValid(bearer)) fail('unauthenticated');
     const sessionId = hash(bearer), session = await store.get(path.session(sessionId));
     if (!validSession(session, clock())) fail('session_expired');
     const schoolProfile = await profile(session.uid);
-    await store.runTransaction(async tx => {
-      const [current, link, owner] = await Promise.all([tx.get(path.session(sessionId)),
-        tx.get(path.link(session.zaloUserId)), tx.get(path.owner(session.uid))]);
+    // A business transaction must use its own transaction-backed getter here.
+    // This makes revocation/session changes conflict with the same write rather
+    // than authorizing one transaction and mutating data in a later unchecked one.
+    const assertCurrent = async readPrivate => {
+      if (typeof readPrivate !== 'function') fail('service_unavailable');
+      const [current, link, owner] = await Promise.all([readPrivate(path.session(sessionId)),
+        readPrivate(path.link(session.zaloUserId)), readPrivate(path.owner(session.uid))]);
       if (!validSession(current, clock()) || current.uid !== session.uid || current.zaloUserId !== session.zaloUserId
         || current.linkVersion !== session.linkVersion || !samePair(owner, link, session.uid, session.zaloUserId)
         || link.version !== session.linkVersion) fail('session_expired');
-    });
-    return { profile: schoolProfile };
+    };
+    await store.runTransaction(tx => assertCurrent(key => tx.get(key)));
+    return Object.freeze({ uid: session.uid, profile: Object.freeze(schoolProfile), assertCurrent });
+  }
+
+  async function me(bearer) {
+    const context = await authorizeMiniSession(bearer);
+    return { profile: context.profile };
   }
 
   async function logout(bearer) {
@@ -306,6 +327,16 @@ export function createAccountLinkService(options = {}) {
   }
 
   return {
+    // Internal server API. This context is never an RPC response or a Firebase
+    // custom token, and it contains no role or permission claims.
+    async authorizeMiniSession(bearer) {
+      try { return await authorizeMiniSession(bearer); }
+      catch (error) {
+        const code = publicErrors.get(error);
+        if (code) throw new AccountLinkError(ERRORS[code][0], code);
+        throw new AccountLinkError(503, 'service_unavailable');
+      }
+    },
     async run(action, body, bearer) {
       try {
         if (!Object.hasOwn(fields, action)) fail('invalid_action');

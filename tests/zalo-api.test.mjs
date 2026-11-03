@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { readZaloRuntimeConfig, validateSchoolAccount, validateSchoolProfileAccount, createFirestoreLinkStore, sanitizeSchoolProfile, reportZaloVerificationFailure } from '../api/_lib/zalo-runtime.mjs';
 import { ZaloIdentityError } from '../miniapp/server/verify-zalo-identity.mjs';
+import { MEAL_ACTION_FIELDS, MEAL_ERROR_STATUS } from '../miniapp/shared/meal-contract.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -127,6 +128,40 @@ test('limits body size, then forwards only exact action fields and raw bearer', 
   assert.equal(r.statusCode, 200); assert.deepEqual(r.received,
     ['mini.claim', { code: 'Abc_def-01234567890123456' }, 'TEST_ONLY_TOKEN']);
   assert.equal(r.headers['Cache-Control'], 'no-store');
+});
+test('meal RPC actions require every exact field and reject all client identity or permission selectors', async () => {
+  const bodies = {
+    'meal.snapshot': { month: '2026-11', weekId: '2026-11-02' },
+    'meal.register': { month: '2026-11', breakfast: true, lunch: true },
+    'meal.cancel': { dates: ['2026-11-04'], meal: 'lunch', reason: 'TEST_ONLY', canteen: 'TEST_ONLY' },
+    'meal.event': { eventId: 'TEST_ONLY_EVENT', choice: true },
+    'meal.survey': { weekId: '2026-11-02', answers: { TEST_ONLY: 5 } },
+  };
+  assert.deepEqual(Object.keys(bodies).sort(), Object.keys(MEAL_ACTION_FIELDS).sort());
+  for (const [action, body] of Object.entries(bodies)) {
+    const result = await request({ body: { action, ...body } });
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(result.received, [action, body, 'TEST_ONLY_TOKEN']);
+    for (const key of MEAL_ACTION_FIELDS[action]) {
+      const missing = { action, ...body }; delete missing[key];
+      const denied = await request({ body: missing });
+      assert.equal(denied.statusCode, 400); assert.equal(denied.calls, 0);
+    }
+    for (const extra of [{ uid: 'forged' }, { email: 'forged@hoangmaistarschool.edu.vn' }, { employeeId: 'forged' }, { admin: true }]) {
+      const denied = await request({ body: { action, ...body, ...extra } });
+      assert.equal(denied.statusCode, 400); assert.equal(denied.calls, 0);
+    }
+  }
+});
+
+test('business service errors are fixed public messages with their documented statuses', async () => {
+  for (const [code, status] of Object.entries(MEAL_ERROR_STATUS)) {
+    const error = new AccountLinkError(status, code);
+    const result = await request({ body: { action: 'meal.snapshot', month: '2026-11', weekId: '2026-11-02' }, serviceError: error });
+    assert.equal(result.statusCode, status);
+    assert.equal(result.payload.error.code, code);
+    assert.ok(!result.payload.error.message.includes('TEST_ONLY'));
+  }
 });
 test('returns trusted service errors and sanitizes unexpected errors without exposing secrets', async () => {
   const conflict = await request({ serviceError: new AccountLinkError(409, 'link_conflict') });

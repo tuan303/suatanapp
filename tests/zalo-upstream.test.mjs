@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getZaloUpstreamService } from '../api/_lib/zalo-upstream.mjs';
 import { AccountLinkError } from '../miniapp/server/account-links.mjs';
+import { MEAL_ACTION_FIELDS, MEAL_ERROR_STATUS } from '../miniapp/shared/meal-contract.mjs';
 
 const URL = 'https://api-suatan.nshm.vn/api/zalo';
 const PRIVATE = 'TEST_ONLY_PRIVATE_TOKEN_AND_PROVIDER_MESSAGE';
@@ -62,6 +63,37 @@ test('rejects adapter misuse without a network request or local-verification fal
   assert.equal(calls, 0);
 });
 
+test('business RPC forwarding preserves only exact contract fields and fixed public errors', async () => {
+  const bodies = {
+    'meal.snapshot': { month: '2026-11', weekId: '2026-11-02' },
+    'meal.register': { month: '2026-11', breakfast: true, lunch: false },
+    'meal.cancel': { dates: ['2026-11-04'], meal: 'lunch', reason: 'TEST_ONLY', canteen: 'TEST_ONLY' },
+    'meal.event': { eventId: 'TEST_ONLY_EVENT', choice: true },
+    'meal.survey': { weekId: '2026-11-02', answers: { TEST_ONLY: 5 } },
+  };
+  let calls = 0;
+  for (const [action, body] of Object.entries(bodies)) {
+    const upstream = service(async (_url, options) => {
+      calls++; assert.deepEqual(JSON.parse(options.body), { action, ...body }); return json({ saved: true });
+    });
+    assert.deepEqual(await upstream.run(action, body, PRIVATE), { saved: true });
+    for (const key of MEAL_ACTION_FIELDS[action]) {
+      const missing = { ...body }; delete missing[key];
+      await assert.rejects(upstream.run(action, missing, PRIVATE), publicError());
+    }
+    for (const extra of [{ uid: 'forged' }, { email: 'forged@example.com' }, { admin: true }])
+      await assert.rejects(upstream.run(action, { ...body, ...extra }, PRIVATE), publicError());
+  }
+  assert.equal(calls, 5);
+  for (const [code, status] of Object.entries(MEAL_ERROR_STATUS)) {
+    await assert.rejects(service(async () => json({ error: { code, message: PRIVATE } }, status))
+      .run('meal.snapshot', bodies['meal.snapshot'], PRIVATE), publicError(status, code));
+    const mismatched = status === 403 ? 409 : 403;
+    await assert.rejects(service(async () => json({ error: { code, message: PRIVATE } }, mismatched))
+      .run('meal.snapshot', bodies['meal.snapshot'], PRIVATE), publicError());
+  }
+});
+
 test('successful RPC objects preserve approval, session and personal-profile fields', async () => {
   for (const value of [{ linked: false }, { linked: true, sessionToken: 'TEST_ONLY_SESSION', expiresAt: 1234,
     profile: { fullName: 'Nhân viên mẫu', employeeId: '100001', department: 'CNTT', email: 'test@example.com' } },
@@ -96,18 +128,21 @@ test('network, parser, redirect and transport-forged public errors never expose 
 });
 
 test('response bodies must be plain JSON objects and bounded by actual streamed bytes', async () => {
-  for (const value of [null, [], 'text', 1, true, { text: 'x'.repeat(16_384) }])
+  for (const value of [null, [], 'text', 1, true, { text: 'x'.repeat(131_072) }])
     await assert.rejects(service(async () => json(value)).run('mini.login', {}, PRIVATE), publicError());
   await assert.rejects(service(async () => new Response('{"linked":false}', {
-    headers: { 'content-type': 'application/json', 'content-length': '16385' },
+    headers: { 'content-type': 'application/json', 'content-length': '131073' },
   })).run('mini.login', {}, PRIVATE), publicError());
   const stream = new ReadableStream({ start(controller) {
-    controller.enqueue(new TextEncoder().encode(`{"text":"${'x'.repeat(16_384)}`));
+    controller.enqueue(new TextEncoder().encode(`{"text":"${'x'.repeat(131_072)}`));
     controller.close();
   } });
   await assert.rejects(service(async () => new Response(stream, {
     headers: { 'content-type': 'application/json', 'content-length': '1' },
   })).run('mini.login', {}, PRIVATE), publicError());
+  const boundedMonth = { menu: 'x'.repeat(100_000) };
+  assert.deepEqual(await service(async () => json(boundedMonth))
+    .run('meal.snapshot', { month: '2026-11', weekId: '2026-11-02' }, PRIVATE), boundedMonth);
 });
 
 test('deadline aborts transport and also bounds response parsing when a stream ignores the signal', async () => {

@@ -1,5 +1,6 @@
 // Client for the personal account-link API. Tokens are passed by the caller
 // and remain in memory: no cookies or browser/native persistent storage.
+import { MEAL_ACTION_FIELDS } from '../../shared/meal-contract.mjs';
 export type LinkedProfile = { fullName: string; employeeId: string; department: string; email: string };
 export type LinkedSession = { sessionToken: string; expiresAt: number; profile: LinkedProfile };
 export type LoginResult = { linked: false } | ({ linked: true } & LinkedSession);
@@ -30,6 +31,20 @@ const messages: Record<string, string> = {
   invalid_response: 'Dữ liệu xác thực trả về chưa hợp lệ. Vui lòng thử lại hoặc liên hệ quản trị.',
   link_not_confirmed: 'Chưa xác nhận được liên kết. Vui lòng kiểm tra tài khoản Zalo lại.',
   forbidden: 'Tài khoản chưa được phép sử dụng chức năng này.',
+  account_unavailable: 'Tài khoản nhà trường chưa thể sử dụng. Vui lòng đăng nhập lại trên website hoặc liên hệ bộ phận CNTT.',
+  email_verification_required: 'Vui lòng mở trang liên kết trên website để xác minh email nhà trường, sau đó kiểm tra tài khoản Zalo lại.',
+  invalid_request: 'Thông tin gửi chưa hợp lệ. Vui lòng kiểm tra lựa chọn và thử lại.',
+  registration_closed: 'Đã hết hạn đăng ký hoặc điều chỉnh cho tháng này.',
+  registration_blocked: 'Tài khoản đang bị hạn chế đăng ký. Vui lòng kiểm tra thông tin trên website hoặc liên hệ bộ phận phụ trách.',
+  cancellation_closed: 'Một hoặc nhiều bữa đã quá hạn hủy. Vui lòng tải lại dữ liệu để kiểm tra.',
+  event_closed: 'Sự kiện đã đóng đăng ký hoặc không còn phục vụ.',
+  survey_closed: 'Khảo sát chưa mở hoặc đã hết hạn trả lời.',
+  data_unavailable: 'Dữ liệu chưa sẵn sàng. Vui lòng tải lại hoặc liên hệ bộ phận phụ trách.',
+  profile_incomplete: 'Hồ sơ nhà trường chưa đủ thông tin. Vui lòng cập nhật hồ sơ trên website.',
+  already_registered: 'Đơn đăng ký tháng đã được ghi nhận. Vui lòng tải lại dữ liệu.',
+  not_registered: 'Chưa đăng ký bữa ăn này hoặc bữa không thuộc thời gian phục vụ.',
+  already_cancelled: 'Bữa này đã được báo hủy trước đó. Vui lòng tải lại dữ liệu.',
+  already_responded: 'Lựa chọn sự kiện đã được ghi nhận trước đó. Vui lòng tải lại dữ liệu.',
   timeout: 'Kết nối quá thời gian chờ. Vui lòng thử lại.',
   network: 'Chưa kết nối được máy chủ. Kiểm tra kết nối mạng rồi thử lại.',
   cancelled: 'Yêu cầu đã được hủy.',
@@ -169,7 +184,7 @@ export function createAccountLinkClient(options: ClientOptions = {}) {
     return value;
   };
 
-  async function post(action: string, token: string, fields: Record<string, string> = {}, signal?: AbortSignal) {
+  async function post(action: string, token: string, fields: Record<string, unknown> = {}, signal?: AbortSignal) {
     const endpoint = `${requireOrigin()}/api/zalo`;
     cancelled(signal);
     if (!isToken(token)) throw new AccountLinkError('auth_required');
@@ -284,6 +299,12 @@ export function createAccountLinkClient(options: ClientOptions = {}) {
     },
     async logout(token: string, signal?: AbortSignal) {
       await post('mini.logout', token, {}, signal);
+    },
+    async business(action: string, token: string, fields: Record<string, unknown>, signal?: AbortSignal) {
+      if (!Object.hasOwn(MEAL_ACTION_FIELDS, action) || !isObject(fields)
+        || Object.keys(fields).length !== MEAL_ACTION_FIELDS[action].length
+        || MEAL_ACTION_FIELDS[action].some(key => !Object.hasOwn(fields, key))) throw new AccountLinkError('invalid_request');
+      return post(action, token, fields, signal);
     },
   };
 }

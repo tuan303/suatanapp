@@ -1,12 +1,14 @@
 import { AccountLinkError } from '../miniapp/server/account-links.mjs';
 import { getLiveZaloService } from './_lib/zalo-runtime.mjs';
 import { getZaloUpstreamService } from './_lib/zalo-upstream.mjs';
+import { MEAL_ACTION_FIELDS } from '../miniapp/shared/meal-contract.mjs';
 
 export const config = { maxDuration: 30 };
-const FIELDS: Record<string, string[]> = {
+const FIELDS: Record<string, readonly string[]> = {
   'web.createChallenge': [], 'web.challengeStatus': ['challengeId'], 'web.confirmLink': ['challengeId'],
   'web.getLink': [], 'web.revokeLink': [], 'mini.login': [], 'mini.claim': ['code'],
   'mini.claimStatus': [], 'mini.me': [], 'mini.logout': [],
+  ...MEAL_ACTION_FIELDS,
 };
 interface Request { method?: string; headers: Record<string, string | string[] | undefined>; body?: unknown; }
 interface Response { setHeader(name: string, value: string): unknown; status(code: number): Response; json(body: unknown): unknown; end?(): unknown; }
@@ -50,7 +52,8 @@ export function createZaloHandler({ env = process.env, getService }: Dependencie
       action = (raw as Record<string, unknown>).action as string;
       if (typeof action !== 'string' || !Object.hasOwn(FIELDS, action)) throw new Error();
       const allowed = new Set(['action', ...FIELDS[action]]);
-      if (Object.keys(raw).some(key => !allowed.has(key))) throw new Error();
+      if (Object.keys(raw).length !== allowed.size || Object.keys(raw).some(key => !allowed.has(key))
+        || FIELDS[action].some(key => !Object.hasOwn(raw, key))) throw new Error();
       body = Object.fromEntries(FIELDS[action].map(field => [field, (raw as Record<string, unknown>)[field]]));
     } catch { return error(400, 'invalid_request', 'Thông tin yêu cầu không hợp lệ.'); }
     try {

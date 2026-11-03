@@ -6,21 +6,21 @@ Zalo App ID cha đã được chủ dự án đính chính và xác nhận: **92
 
 ## Trạng thái hiện tại
 
-Đây là **bản mẫu giao diện và nền tảng phát triển**, chưa phải bản vận hành. Dữ liệu hư cấu được ghi rõ ở tất cả màn hình. Đăng ký, hủy, sự kiện và khảo sát chỉ thay đổi bộ nhớ của phiên xem; tải lại sẽ mất. Các tab nghiệp vụ chưa đọc/ghi Firestore thật hoặc gửi email/tin Zalo. Luồng liên kết tài khoản có API thật đã triển khai và chỉ chạy sau thao tác chủ động của người dùng; chưa xác nhận bằng đăng nhập Microsoft/Zalo thật trên điện thoại.
+Liên kết Microsoft/Zalo đã được kiểm tra thành công trên điện thoại. Bản `LIVE-20261103.1` chuyển các màn hình nghiệp vụ sang API dữ liệu thật, cùng Firebase `dkan-4b061` với website. Không hiển thị dữ liệu mẫu khi mất mạng hoặc API chưa cập nhật. Cần cập nhật cả API trên VPS và bản Mini App trong Zalo theo [hướng dẫn triển khai dữ liệu thật](../docs/ZALO_LIVE_DATA.md).
 
 | Thành phần | Trạng thái |
 | --- | --- |
-| Bốn mục Trang chủ / Đăng ký / Thực đơn / Cá nhân | Bản mẫu có thể thao tác |
-| Đăng ký, hủy, sự kiện, khảo sát | Thao tác minh họa, chưa ghi dữ liệu thật |
+| Bốn mục Trang chủ / Đăng ký / Thực đơn / Cá nhân | Đọc dữ liệu chính chủ từ API sau xác thực |
+| Đăng ký, hủy, sự kiện, khảo sát | Có xác nhận và API ghi thật, kiểm tra thời hạn bằng giờ máy chủ |
 | Xác minh access token Zalo phía server | Có hàm độc lập và kiểm thử giả lập |
-| Liên kết Microsoft ↔ Zalo, phiên API cá nhân | Web/API đã triển khai ở `suatanapp.vercel.app`; đang chờ kiểm thử Zalo thật |
-| API nghiệp vụ đọc/ghi đăng ký, thực đơn, lịch sử | Chưa nối với Mini App; các tab vẫn là dữ liệu mẫu |
-| Kiểm thử trên điện thoại trong Zalo | Chưa thực hiện |
-| Đưa bản Testing / phát hành Zalo | Chưa thực hiện |
+| Liên kết Microsoft ↔ Zalo, phiên API cá nhân | Đã kiểm tra bằng tài khoản thật; phiên chỉ giữ trong bộ nhớ |
+| API nghiệp vụ đọc/ghi đăng ký, thực đơn, lịch sử | Đã triển khai mã và kiểm thử giả lập; cần cập nhật VPS/Mini App và đối chiếu dữ liệu sau triển khai |
+| Kiểm thử nghiệp vụ trên điện thoại | Thực hiện sau khi cập nhật hai thành phần |
+| Phát hành Zalo cho toàn trường | Thực hiện sau kiểm thử và quy trình duyệt của Zalo |
 
 Ứng dụng web DKAN, Agent HAC và cơ chế email hiện hành vẫn là hệ thống đang vận hành. Bộ khung này nằm trong thư mục riêng; không yêu cầu cập nhật Agent.
 
-## Chạy bản mẫu trên máy tính
+## Chạy giao diện trên máy tính
 
 Chạy hằng ngày khi đã cài thư viện:
 
@@ -113,7 +113,7 @@ Mặc định API trả 503 khi chưa bật/thiếu cấu hình. Các collection
 
 - Đã nhận hai ID; còn kiểm tra quyền tài khoản phát triển trong Mini App Center.
 - Thiết lập App Secret của Zalo ở biến môi trường **server**; không gửi khóa qua chat hoặc đặt tên biến `VITE_*` cho khóa.
-- API liên kết và phiên cá nhân đã triển khai; còn kiểm thử Microsoft/Zalo thật, triển khai Testing và xây các endpoint đọc/ghi nghiệp vụ. Không bật dữ liệu nghiệp vụ thật trước khi kiểm tra quyền.
+- API liên kết và phiên cá nhân đã hoạt động; triển khai API nghiệp vụ và Mini App theo `docs/ZALO_LIVE_DATA.md`, đối chiếu dữ liệu chính chủ trước khi phát hành.
 - Kiểm thử Zalo trên thiết bị thật và thực hiện quy trình xác thực/xét duyệt của nền tảng trước khi phát hành.
 - Giữ email; chỉ bổ sung thông báo Zalo sau khi xác nhận OA, quyền, mẫu tin, điều kiện gửi và chi phí phù hợp.
 
@@ -126,8 +126,6 @@ Tài liệu tham chiếu đã kiểm tra ngày 30/10/2026:
 
 ## Kiểm chứng
 
-Kiểm thử tự động sử dụng dữ liệu và Zalo Graph giả lập; không xác nhận quyền App ID hoặc kết nối Zalo thật. Chỉ đánh dấu các bước Testing, xác thực tài khoản và dữ liệu thật hoàn thành sau khi đã kiểm tra trên môi trường tương ứng.
+Kiểm thử tự động dùng dữ liệu và Zalo Graph giả lập; không gửi email, tạo đơn thử trên Firebase thật hoặc tự xác nhận liên kết. Luồng liên kết đã được chủ tài khoản kiểm tra trên thiết bị thật ngày 03/11/2026. Các nghiệp vụ mới cần đối chiếu lại sau khi triển khai.
 
-Kiểm tra ngày 30/10/2026: `npm run typecheck`, `npm run build` và **17/17 kiểm thử xác thực giả lập** đạt. Đã thao tác bốn tab ở 320px/768px, đăng ký/hủy mẫu, đổi ngày thực đơn, hộp liên kết, khảo sát và sự kiện. Không tràn ngang; các nút menu cao 54px, ô chọn ngày cao 48px với cỡ chữ nhập liệu 16px. Đây là QA trong trình duyệt, chưa thay thế kiểm thử Zalo trên điện thoại thật.
-
-Cập nhật luồng liên kết: **56 kiểm thử Mini App/server nền tảng + 24 kiểm thử API và trang web = 80 kiểm thử mới đạt**. Có kiểm tra xuyên suốt RPC từ tạo mã → Mini App nhận mã → web xác nhận → cấp phiên cá nhân → hủy liên kết → từ chối phiên cũ. TypeScript web/Mini App và build đạt. Không thực hiện đăng nhập Microsoft/Zalo thật, không dùng khóa thật hoặc ghi dữ liệu thật trong kiểm thử.
+Chạy `npm test`, `npm run typecheck`, `npm run build` trong thư mục `miniapp`. Kiểm thử bao phủ phiên, quyền chính chủ, cấu trúc snapshot, giao dịch ghi, hạn theo giờ Việt Nam và quy tắc chấm ăn dùng chung. Giao diện chỉ báo đã lưu sau phản hồi thành công, xóa dữ liệu khi hết phiên và không thay API lỗi bằng dữ liệu mẫu.

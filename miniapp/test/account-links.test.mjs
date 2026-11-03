@@ -99,6 +99,102 @@ async function linked(f, school = 'school-A', zalo = 'zalo-A') {
   return { challenge, claim, link };
 }
 
+test('internal meal authorization binds the session UID without exposing it through mini.me or accepting meal RPCs', async () => {
+  const f = fixture(); await linked(f);
+  const login = await f.run('mini.login', {}, 'zalo-A');
+  const context = await f.service.authorizeMiniSession(login.sessionToken);
+  assert.deepEqual(Object.keys(context).sort(), ['assertCurrent', 'profile', 'uid']);
+  assert.equal(context.uid, 'staff_A');
+  assert.equal(context.profile.employeeId, '100001');
+  assert.equal(context.profile.role, undefined);
+  assert.equal(context.profile.isAdmin, undefined);
+  assert.equal(Object.isFrozen(context), true);
+  assert.equal(Object.isFrozen(context.profile), true);
+  const me = await f.run('mini.me', {}, login.sessionToken);
+  assert.deepEqual(me, { profile: context.profile });
+  assert.equal(me.uid, undefined);
+  assert.equal(me.assertCurrent, undefined);
+  await rejects(f.run('meal.snapshot', { month: '2026-11', weekId: '2026-11-02' }, login.sessionToken), 'invalid_action', 400);
+  await rejects(f.service.authorizeMiniSession('school-A'), 'unauthenticated', 401);
+  let readPaths = [];
+  await f.store.runTransaction(async tx => {
+    await context.assertCurrent(async key => { readPaths.push(key); return tx.get(key); });
+    tx.set('TEST_ONLY_meal_write', { uid: context.uid });
+  });
+  assert.deepEqual(readPaths.sort(), [`zalo_link_owners/${APP}_staff_A`, `zalo_link_sessions/${sha(login.sessionToken)}`, `zalo_links/${APP}_${ZALO_A}`].sort());
+  assert.deepEqual(await f.store.get('TEST_ONLY_meal_write'), { uid: 'staff_A' });
+});
+
+test('revocation between meal authorization and its transaction prevents every business write, including after re-link', async () => {
+  const f = fixture(); await linked(f);
+  const login = await f.run('mini.login', {}, 'zalo-A');
+  const context = await f.service.authorizeMiniSession(login.sessionToken);
+  await f.run('web.revokeLink');
+  const attempt = () => f.store.runTransaction(async tx => {
+    await context.assertCurrent(key => tx.get(key));
+    tx.set('TEST_ONLY_FORBIDDEN_meal_write', { written: true });
+  });
+  await rejects(attempt(), 'session_expired', 401);
+  assert.equal(await f.store.get('TEST_ONLY_FORBIDDEN_meal_write'), null);
+  await linked(f);
+  await rejects(attempt(), 'session_expired', 401);
+  assert.equal(await f.store.get('TEST_ONLY_FORBIDDEN_meal_write'), null);
+});
+
+test('meal transaction guard rechecks expiry and logout using the server clock', async () => {
+  for (const cause of ['expiry', 'logout']) {
+    const f = fixture(); await linked(f);
+    const login = await f.run('mini.login', {}, 'zalo-A');
+    const context = await f.service.authorizeMiniSession(login.sessionToken);
+    if (cause === 'expiry') f.state.now = login.expiresAt;
+    else await f.run('mini.logout', {}, login.sessionToken);
+    await rejects(f.store.runTransaction(async tx => {
+      await context.assertCurrent(key => tx.get(key));
+      tx.set('TEST_ONLY_FORBIDDEN_meal_write', {});
+    }), 'session_expired', 401);
+    assert.equal(await f.store.get('TEST_ONLY_FORBIDDEN_meal_write'), null);
+  }
+});
+
+test('a Firestore-style business transaction retry reruns the session guard before committing after revocation', async () => {
+  const f = fixture(); await linked(f);
+  const login = await f.run('mini.login', {}, 'zalo-A');
+  const context = await f.service.authorizeMiniSession(login.sessionToken);
+  let attempts = 0, proposed = 0, committed = 0;
+  const retryingBusinessTransaction = async callback => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      attempts++;
+      const staged = [];
+      await callback({ get: key => f.store.get(key), set: (key, value) => { proposed++; staged.push([key, value]); } });
+      if (attempt === 0) {
+        // The link read by the first attempt changes before commit. Firestore
+        // retries its callback and discards that attempt's queued writes.
+        await f.run('web.revokeLink');
+        continue;
+      }
+      for (const [key, value] of staged) { committed++; f.store.docs.set(key, copy(value)); }
+    }
+  };
+  await rejects(retryingBusinessTransaction(async tx => {
+    await context.assertCurrent(key => tx.get(key));
+    tx.set('TEST_ONLY_FORBIDDEN_retry_write', { uid: context.uid });
+  }), 'session_expired', 401);
+  assert.equal(attempts, 2);
+  assert.equal(proposed, 1);
+  assert.equal(committed, 0);
+  assert.equal(await f.store.get('TEST_ONLY_FORBIDDEN_retry_write'), null);
+});
+
+test('internal meal authorizer validates current school account and sanitizes storage failures', async () => {
+  const f = fixture(); await linked(f);
+  const login = await f.run('mini.login', {}, 'zalo-A');
+  f.state.disabled.add('staff_A');
+  await rejects(f.service.authorizeMiniSession(login.sessionToken), 'account_unavailable', 403);
+  f.state.disabled.clear();
+  f.store.get = async () => { throw new Error(PRIVATE); };
+  await rejects(f.service.authorizeMiniSession(login.sessionToken), 'service_unavailable', 503);
+});
+
 test('complete link requires both verified identities and explicit recent web confirmation', async () => {
   const f = fixture();
   assert.deepEqual(await f.run('mini.login', {}, 'zalo-A'), { linked: false });

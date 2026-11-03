@@ -2,13 +2,15 @@
 // RPC, including identity verification, approval and session checks. A proxy
 // response never substitutes a client-supplied identity for verification.
 import { AccountLinkError } from '../../miniapp/server/account-links.mjs';
+import { MEAL_ACTION_FIELDS, MEAL_ERROR_STATUS } from '../../miniapp/shared/meal-contract.mjs';
 
 const UPSTREAM = 'https://api-suatan.nshm.vn/api/zalo';
-const MAX_RESPONSE_BYTES = 16_384;
+const MAX_RESPONSE_BYTES = 131_072;
 const FIELDS = Object.freeze({
   'web.createChallenge': [], 'web.challengeStatus': ['challengeId'], 'web.confirmLink': ['challengeId'],
   'web.getLink': [], 'web.revokeLink': [], 'mini.login': [], 'mini.claim': ['code'],
   'mini.claimStatus': [], 'mini.me': [], 'mini.logout': [],
+  ...MEAL_ACTION_FIELDS,
 });
 const ERROR_CODES = Object.freeze({
   invalid_config: [500, 'invalid_config'], invalid_action: [400, 'invalid_action'],
@@ -19,6 +21,7 @@ const ERROR_CODES = Object.freeze({
   link_conflict: [409, 'link_conflict'], rate_limited: [429, 'rate_limited'],
   session_expired: [401, 'session_expired'], service_unavailable: [503, 'service_unavailable'],
   not_configured: [503, 'service_unavailable'],
+  ...Object.fromEntries(Object.entries(MEAL_ERROR_STATUS).map(([code, status]) => [code, [status, code]])),
 });
 const unavailable = () => new AccountLinkError(503, 'service_unavailable');
 const plainObject = value => !!value && typeof value === 'object' && !Array.isArray(value)
@@ -75,6 +78,7 @@ export function getZaloUpstreamService(env = process.env, options = {}) {
       let payload;
       try {
         if (typeof action !== 'string' || !Object.hasOwn(FIELDS, action) || !plainObject(body)
+          || Object.keys(body).length !== FIELDS[action].length || FIELDS[action].some(key => !Object.hasOwn(body, key))
           || Object.keys(body).some(key => !FIELDS[action].includes(key))
           || typeof bearer !== 'string' || !/^[\x21-\x7e]{1,16384}$/.test(bearer)) throw unavailable();
         payload = JSON.stringify({ action, ...body });

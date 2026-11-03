@@ -114,4 +114,4 @@ curl.exe -i -X OPTIONS https://api-suatan.nshm.vn/api/zalo -H "Origin: https://h
 
 Lệnh thứ nhất phải trả `status: ok`; lệnh thứ hai phải trả HTTP 204 và `Access-Control-Allow-Origin: https://h5.zdn.vn`. Chỉ kiểm tra được lớp HTTP/CORS; kết quả liên kết trên điện thoại mới xác nhận xác minh Zalo thật.
 
-Không gửi access token, App Secret hoặc JSON Firebase qua chat/log. Bản Mini App vẫn chỉ có dữ liệu nghiệp vụ minh họa ngoài phần liên kết tài khoản.
+Không gửi access token, App Secret hoặc JSON Firebase qua chat/log. Bản `LK-20261030.2` chỉ liên kết tài khoản; để sử dụng nghiệp vụ thật ở `LIVE-20261103.1`, cập nhật `server.cjs` và deploy lại Mini App theo [hướng dẫn dữ liệu thật](ZALO_LIVE_DATA.md). Bản Vercel mới vẫn chuyển tiếp tới cùng URL API Việt Nam, giữ nguyên cấu hình hiện có.

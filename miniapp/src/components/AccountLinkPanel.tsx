@@ -12,17 +12,19 @@ const timeLabel = (value: number) => new Intl.DateTimeFormat('vi-VN', {
 export function AccountLinkPanel({
   apiOrigin = import.meta.env.VITE_DKAN_API_ORIGIN,
   development = import.meta.env.DEV,
-}: { apiOrigin?: string; development?: boolean }) {
+  initialSession = null,
+  onSessionChange,
+}: { apiOrigin?: string; development?: boolean; initialSession?: LinkedSession | null; onSessionChange?: (session: LinkedSession | null) => void }) {
   const setup = useMemo(() => {
     try { return { client: createAccountLinkClient({ origin: apiOrigin, development }), error: null }; }
     catch (error) { return { client: null, error: accountLinkMessage(error) }; }
   }, [apiOrigin, development]);
   const client = setup.client;
   const website = client?.websiteUrl;
-  const [view, setView] = useState<View>('start');
+  const [view, setView] = useState<View>(() => initialSession && initialSession.expiresAt > Date.now() ? 'linked' : 'start');
   const [busy, setBusy] = useState<Busy>(null);
   const [code, setCode] = useState('');
-  const [session, setSession] = useState<LinkedSession | null>(null);
+  const [session, setSession] = useState<LinkedSession | null>(() => initialSession && initialSession.expiresAt > Date.now() ? initialSession : null);
   const [claimExpiry, setClaimExpiry] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -33,6 +35,13 @@ export function AccountLinkPanel({
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const zaloToken = useRef('');
   const claimToken = useRef('');
+  const sessionListener = useRef(onSessionChange);
+  sessionListener.current = onSessionChange;
+
+  function updateSession(value: LinkedSession | null) {
+    setSession(value);
+    sessionListener.current?.(value);
+  }
 
   function invalidate() {
     generation.current++;
@@ -51,15 +60,17 @@ export function AccountLinkPanel({
   function clearIdentity() {
     zaloToken.current = '';
     claimToken.current = '';
-    setSession(null);
+    updateSession(null);
     setClaimExpiry(null);
     setCode('');
     setPollPaused(false);
   }
   useEffect(() => {
     mounted.current = true;
-    clearIdentity();
-    setView('start');
+    zaloToken.current = ''; claimToken.current = ''; setClaimExpiry(null); setCode(''); setPollPaused(false);
+    const restored = initialSession && initialSession.expiresAt > Date.now() ? initialSession : null;
+    setSession(restored);
+    setView(restored ? 'linked' : 'start');
     setBusy(null);
     setError(null);
     setNotice(null);
@@ -69,7 +80,7 @@ export function AccountLinkPanel({
       zaloToken.current = '';
       claimToken.current = '';
     };
-  }, [client]);
+  }, [client, initialSession?.sessionToken]);
 
   function expireClaim() {
     invalidate();
@@ -112,7 +123,7 @@ export function AccountLinkPanel({
       const result = await client.login(token, request.signal);
       if (!request.active()) return;
       if (result.linked) {
-        setSession(result);
+        updateSession(result);
         zaloToken.current = '';
         setView('linked');
       } else setView('code');
@@ -133,7 +144,7 @@ export function AccountLinkPanel({
         const login = await client.login(zaloToken.current, request.signal);
         if (!request.active()) return;
         if (!login.linked) throw new AccountLinkError('link_not_confirmed');
-        setSession(login);
+        updateSession(login);
         zaloToken.current = '';
         claimToken.current = '';
         setClaimExpiry(null);
@@ -204,7 +215,7 @@ export function AccountLinkPanel({
     setNotice(null);
     try {
       const profile = await client.me(previous.sessionToken, request.signal);
-      if (request.active()) { setSession({ ...previous, profile }); setNotice('Đã cập nhật thông tin tài khoản đã xác minh.'); }
+      if (request.active()) { updateSession({ ...previous, profile }); setNotice('Đã cập nhật thông tin tài khoản đã xác minh.'); }
     } catch (caught) {
       if (!request.active()) return;
       setError(accountLinkMessage(caught));
@@ -267,6 +278,6 @@ export function AccountLinkPanel({
       <button className="ma-link-secondary" disabled={!!busy} onClick={() => { void logout(); }}>{busy === 'logout' ? 'Đang đăng xuất…' : 'Đăng xuất phiên Mini App'}</button>
     </>}
 
-    <div className="ma-link-scope-note"><strong>Phạm vi bản phát triển</strong><p>Khung này chỉ xác minh liên kết tài khoản. Các tab đăng ký, hủy ăn, thực đơn và khảo sát bên ngoài vẫn dùng dữ liệu minh họa, chưa gửi thao tác nghiệp vụ thật.</p><p>Phiên bản liên kết: <strong>{ACCOUNT_LINK_BUILD}</strong></p></div>
+    <div className="ma-link-scope-note"><strong>Tài khoản cá nhân</strong><p>Sau khi xác minh, Mini App tải dữ liệu suất ăn của đúng tài khoản nhà trường đã liên kết. Phiên chỉ lưu trong bộ nhớ; đóng ứng dụng cần kiểm tra tài khoản Zalo lại.</p><p>Phiên bản: <strong>{ACCOUNT_LINK_BUILD}</strong></p></div>
   </section>;
 }

@@ -2,6 +2,8 @@
 import { createHash } from 'node:crypto';
 import { createAccountLinkService, AccountLinkError } from '../../miniapp/server/account-links.mjs';
 import { verifyZaloIdentity, ZaloIdentityError } from '../../miniapp/server/verify-zalo-identity.mjs';
+import { createMealBusinessService } from '../../miniapp/server/meal-business.mjs';
+import { MEAL_ACTION_FIELDS } from '../../miniapp/shared/meal-contract.mjs';
 
 const PROJECT = 'dkan-4b061';
 const SCHOOL_EMAIL = /^[A-Za-z0-9][A-Za-z0-9._%+-]{0,63}@hoangmaistarschool\.edu\.vn$/i;
@@ -101,6 +103,59 @@ export function createFirestoreLinkStore(db) {
   };
 }
 
+/** Business access is bound to one server-verified UID, including inside retries. */
+export function createFirestoreMealStore(db, uid) {
+  if (typeof uid !== 'string' || !UID.test(uid)) unavailable();
+  const month = /^\d{4}-(?:0[1-9]|1[0-2])$/;
+  const date = /^\d{4}-\d{2}-\d{2}$/;
+  const id = /^[A-Za-z0-9_-]{1,128}$/;
+  const settings = new Set(['monthlyConfig', 'monthlyExpiry', 'cancelConfig', 'checkinSync', 'mealOffDays', 'reconcileExcludes']);
+  const ownSuffix = value => typeof value === 'string' && value.startsWith(`${uid}_`) ? value.slice(uid.length + 1) : '';
+  const allowed = (path, writing = false) => {
+    const parts = typeof path === 'string' ? path.split('/') : [];
+    if (parts.length === 2) {
+      const [collection, key] = parts;
+      if (!writing && PRIVATE_COLLECTIONS.has(collection) && /^[A-Za-z0-9_-]{1,220}$/.test(key)) return true;
+      if (!writing && collection === 'settings' && settings.has(key)) return true;
+      if (!writing && collection === 'blocked_users' && month.test(key)) return true;
+      if (!writing && collection === 'weekly_menus' && date.test(key)) return true;
+      if (!writing && collection === 'events' && id.test(key)) return true;
+      if (!writing && collection === 'meal_surveys' && date.test(key)) return true;
+      if (collection === 'registrations' && month.test(ownSuffix(key))) return true;
+      if (collection === 'cancel_registrations' && date.test(ownSuffix(key))) return true;
+      if (collection === 'event_registrations' && id.test(ownSuffix(key))) return true;
+    }
+    return parts.length === 4 && ((parts[0] === 'meal_taps' && !writing && parts[1] === uid && parts[2] === 'months' && month.test(parts[3]))
+      || (parts[0] === 'meal_surveys' && date.test(parts[1]) && parts[2] === 'responses' && parts[3] === uid));
+  };
+  const ref = (path, writing = false) => { if (!allowed(path, writing)) unavailable(); return db.doc(path); };
+  return { runTransaction(callback) {
+    return db.runTransaction(transaction => callback({
+      async get(path) { const snapshot = await transaction.get(ref(path)); return snapshot.exists ? snapshot.data() : null; },
+      async list(name, count) {
+        const maximum = name === 'events' ? 20 : name === 'meal_surveys' ? 12 : 0;
+        if (!Number.isInteger(count) || count < 1 || count > maximum) unavailable();
+        const query = db.collection(name).orderBy(name === 'events' ? 'createdAt' : 'weekId', 'desc').limit(count);
+        const snapshot = await transaction.get(query);
+        return snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+      },
+      set(path, value) {
+        if (!value || typeof value !== 'object' || (path.startsWith('meal_surveys/') ? value.uid : value.userId) !== uid) unavailable();
+        transaction.set(ref(path, true), value);
+      },
+    }));
+  } };
+}
+
+export function createZaloBusinessDispatcher(links, db) {
+  return { async run(action, body, bearer) {
+    if (!Object.hasOwn(MEAL_ACTION_FIELDS, action)) return links.run(action, body, bearer);
+    const identity = await links.authorizeMiniSession(bearer);
+    const business = createMealBusinessService({ store: createFirestoreMealStore(db, identity.uid) });
+    return business.run(action, body, identity);
+  } };
+}
+
 let cachedFingerprint, cachedService;
 export async function getLiveZaloService(env = process.env) {
   const config = readZaloRuntimeConfig(env);
@@ -115,7 +170,7 @@ export async function getLiveZaloService(env = process.env) {
     const firebase = getApps().find(app => app.name === appName)
       || initializeApp({ credential: cert(config.credential), projectId: PROJECT }, appName);
     const auth = getAuth(firebase), db = getFirestore(firebase);
-    return createAccountLinkService({
+    const links = createAccountLinkService({
       appId: config.appId, miniAppId: config.miniAppId, store: createFirestoreLinkStore(db),
       async verifySchoolToken(token, options) {
         const decoded = await auth.verifyIdToken(token, true);
@@ -135,6 +190,7 @@ export async function getLiveZaloService(env = process.env) {
         return sanitizeSchoolProfile(staff, user);
       },
     });
+    return createZaloBusinessDispatcher(links, db);
   })().catch(() => { cachedService = null; unavailable(); });
   return cachedService;
 }

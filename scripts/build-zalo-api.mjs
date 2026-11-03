@@ -14,7 +14,8 @@ await build({ entryPoints: [path.join(root, 'deploy/zalo-api/start.ts')],
 const assets = ['package.json', 'package-lock.json', '.env.example', 'Start-Api.ps1', 'Caddyfile'];
 for (const asset of assets) await copyFile(path.join(root, 'deploy/zalo-api', asset), path.join(output, asset));
 await copyFile(path.join(root, 'docs/ZALO_VIETNAM_API.md'), path.join(output, 'README.md'));
-const files = ['server.cjs', ...assets, 'README.md'];
+await copyFile(path.join(root, 'docs/ZALO_LIVE_DATA.md'), path.join(output, 'ZALO_LIVE_DATA.md'));
+const files = ['server.cjs', ...assets, 'README.md', 'ZALO_LIVE_DATA.md'];
 const sums = await Promise.all(files.map(async name => {
   const bytes = await readFile(path.join(output, name));
   return `${createHash('sha256').update(bytes).digest('hex')}  ${name}`;
