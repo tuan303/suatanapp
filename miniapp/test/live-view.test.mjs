@@ -35,6 +35,33 @@ test('a handoff prompts for an explicit Zalo action without rendering the code',
   assert.doesNotMatch(html, /Mã liên kết trên website|Tài khoản đã xác minh/);
 });
 
+test('school verification shows a selectable browser fallback alongside the opening action', () => {
+  const website = 'https://suatanapp.vercel.app/lien-ket-zalo';
+  const html = renderToStaticMarkup(createElement(account.SchoolVerificationWebsite, {
+    website, busy: null, openWebsite() {}, copyWebsite() {},
+  }));
+  assert.match(html, /href="https:\/\/suatanapp\.vercel\.app\/lien-ket-zalo"[^>]*>Mở trang xác minh Microsoft<\/a>/);
+  assert.match(html, /<code class="ma-link-address">https:\/\/suatanapp\.vercel\.app\/lien-ket-zalo<\/code>/);
+  assert.match(html, /<button[^>]*>Sao chép địa chỉ<\/button>/);
+  assert.match(html, /Chrome hoặc Safari/);
+});
+
+test('Zalo WebView keeps the browser fallback available while the SDK opens the page', () => {
+  const oldLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
+  Object.defineProperty(globalThis, 'location', { configurable: true, value: { hostname: 'h5.zdn.vn', pathname: '/zapps/example' } });
+  try {
+    const html = renderToStaticMarkup(createElement(account.SchoolVerificationWebsite, {
+      website: 'https://suatanapp.vercel.app/lien-ket-zalo', busy: 'website', openWebsite() {}, copyWebsite() {},
+    }));
+    assert.match(html, /<button[^>]+disabled=""[^>]*>Đang mở trang xác minh…<\/button>/);
+    assert.match(html, /<button type="button" class="ma-link-secondary">Sao chép địa chỉ<\/button>/);
+    assert.match(html, /Chrome hoặc Safari/);
+  } finally {
+    if (oldLocation) Object.defineProperty(globalThis, 'location', oldLocation);
+    else delete globalThis.location;
+  }
+});
+
 test('opening account panel with a lifted valid session renders linked profile without rechecking SDK', () => {
   let changes = 0;
   const html = renderToStaticMarkup(createElement(account.AccountLinkPanel, { apiOrigin: 'https://suatanapp.vercel.app', development: false,

@@ -86,3 +86,5 @@ Bản API cũ chỉ hỗ trợ liên kết sẽ từ chối RPC mới. Nếu Min
 RPC dùng `/api/zalo`: `meal.snapshot`, `meal.register`, `meal.cancel`, `meal.event`, `meal.survey`. Chỉ nhận các lựa chọn nghiệp vụ; không nhận UID/email/mã NV/quyền từ client. UID lấy từ phiên đã xác thực. Các ghi dùng Firestore transaction, đọc lại session, hai bản ghi liên kết và phiên bản trong chính giao dịch. Không cấp Firebase custom token, quyền quản trị hoặc quyền đọc lượt chấm toàn trường.
 
 Giới hạn request 8 KiB, response 128 KiB; menu/đơn/lịch sử chỉ chuyển trường đã chọn. Giờ quản trị lưu dạng `datetime-local` được hiểu theo Việt Nam, không theo timezone VPS. Không cần sửa Firestore rules hoặc DKAN Agent để vận hành các RPC này.
+
+Bản `LIVE-20261116.3` sửa cách Mini App mở trang xác minh và cung cấp địa chỉ để mở bằng trình duyệt. Bản sửa này chỉ thay đổi Mini App.

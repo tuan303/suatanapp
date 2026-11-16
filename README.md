@@ -80,3 +80,5 @@ npm run build
 ```
 
 Các kiểm thử Zalo sử dụng danh tính, token và dữ liệu giả lập; không gửi email hoặc ghi dữ liệu vận hành. `test-email.cjs` là công cụ gửi thư thật thủ công, không thuộc lệnh `npm test`.
+
+- Bản `LIVE-20261116.3` cập nhật nút mở trang xác minh Microsoft và hiển thị địa chỉ để mở bằng Chrome hoặc Safari.

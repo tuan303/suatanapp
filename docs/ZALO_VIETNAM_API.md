@@ -117,3 +117,5 @@ Lệnh thứ nhất phải trả `status: ok`; lệnh thứ hai phải trả HTT
 Không gửi access token, App Secret hoặc JSON Firebase qua chat/log. Bản `LK-20261030.2` chỉ liên kết tài khoản; để sử dụng nghiệp vụ thật ở `LIVE-20261103.1`, cập nhật `server.cjs` và deploy lại Mini App theo [hướng dẫn dữ liệu thật](ZALO_LIVE_DATA.md). Bản Vercel mới vẫn chuyển tiếp tới cùng URL API Việt Nam, giữ nguyên cấu hình hiện có.
 
 Bản `LIVE-20261116.2` cập nhật giao diện liên kết trên website và Mini App, sử dụng các thao tác API liên kết hiện có. [Kiểm thử trên thiết bị](ZALO_DEVICE_TEST.md)
+
+Bản `LIVE-20261116.3` mở trang xác minh Microsoft bằng WebView của Zalo hoặc qua trình duyệt khi người dùng sao chép địa chỉ. [Kiểm thử trên thiết bị](ZALO_DEVICE_TEST.md)

@@ -9,6 +9,26 @@ const timeLabel = (value: number) => new Intl.DateTimeFormat('vi-VN', {
   timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit', second: '2-digit',
 }).format(new Date(value));
 
+export function SchoolVerificationWebsite({ website, busy, openWebsite, copyWebsite }: {
+  website: string; busy: Busy; openWebsite: () => void; copyWebsite: () => void;
+}) {
+  return <>
+    <div className="ma-link-how">
+      <strong>Xác minh tài khoản nhà trường</strong>
+      <p>Đăng nhập Microsoft trên website rồi tiếp tục liên kết.</p>
+    </div>
+    {classifyZaloSdkEnvironment() === 'miniapp'
+      ? <button type="button" className="ma-primary" disabled={!!busy} onClick={openWebsite}>{busy === 'website' ? 'Đang mở trang xác minh…' : 'Mở trang xác minh Microsoft'}</button>
+      : <a className="ma-primary ma-link-action" href={website} target="_blank" rel="noopener noreferrer">Mở trang xác minh Microsoft</a>}
+    <div className="ma-link-how">
+      <strong>Mở bằng Chrome hoặc Safari</strong>
+      <p>Nếu trang không mở hoặc Microsoft không đăng nhập được, mở trình duyệt điện thoại và dán địa chỉ này.</p>
+      <code className="ma-link-address">{website}</code>
+      <button type="button" className="ma-link-secondary" onClick={copyWebsite}>Sao chép địa chỉ</button>
+    </div>
+  </>;
+}
+
 export function AccountLinkPanel({
   apiOrigin = import.meta.env.VITE_DKAN_API_ORIGIN,
   development = import.meta.env.DEV,
@@ -159,17 +179,29 @@ export function AccountLinkPanel({
     setError(null);
     setNotice(null);
     try {
-      const { openOutApp } = await import('zmp-sdk');
+      const { openWebview } = await import('zmp-sdk');
       if (!request.active()) return;
       // The bridge may finish only after the app is foregrounded again.
       setBusy(null);
-      await openOutApp({ url: website });
+      await openWebview({ url: website, config: { style: 'normal' } });
     } catch {
       if (request.active()) {
-        setManualEntry(true);
-        setNotice('Bạn có thể mở trang liên kết bằng địa chỉ ở phần nhập mã bên dưới.');
+        setError('Chưa mở được trang xác minh trong Zalo. Hãy mở địa chỉ bên dưới bằng Chrome hoặc Safari.');
       }
     } finally { if (request.active()) setBusy(null); }
+  }
+
+  async function copyWebsite() {
+    if (!website) return;
+    const ticket = generation.current;
+    setError(null);
+    setNotice(null);
+    try {
+      await navigator.clipboard.writeText(website);
+      if (mounted.current && ticket === generation.current) setNotice('Đã sao chép địa chỉ. Mở Chrome hoặc Safari và dán vào thanh địa chỉ.');
+    } catch {
+      if (mounted.current && ticket === generation.current) setNotice('Nhấn giữ địa chỉ hiển thị để sao chép, rồi dán vào Chrome hoặc Safari.');
+    }
   }
 
   async function pollClaim(request: ReturnType<typeof begin>) {
@@ -319,13 +351,9 @@ export function AccountLinkPanel({
     </>}
 
     {view === 'code' && !canContinueHandoff && website && <>
-      <div className="ma-link-how"><strong>Xác minh tài khoản nhà trường</strong><p>Đăng nhập Microsoft trên website, rồi chọn Mở trong Zalo.</p></div>
-      {classifyZaloSdkEnvironment() === 'miniapp'
-        ? <button type="button" className="ma-primary" disabled={!!busy} onClick={() => { void openWebsite(); }}>{busy === 'website' ? 'Đang mở trang xác minh…' : 'Mở trang xác minh Microsoft'}</button>
-        : <a className="ma-primary ma-link-action" href={website} target="_blank" rel="noopener noreferrer">Mở trang xác minh Microsoft</a>}
+      <SchoolVerificationWebsite website={website} busy={busy} openWebsite={() => { void openWebsite(); }} copyWebsite={() => { void copyWebsite(); }} />
       <button type="button" className="ma-link-secondary" aria-expanded={manualEntry} aria-controls="ma-manual-link" onClick={() => setManualEntry(previous => !previous)}>{manualEntry ? 'Ẩn phần nhập mã' : 'Nhập mã thủ công'}</button>
       <div id="ma-manual-link" hidden={!manualEntry}>
-        <a className="ma-link-address" href={website} target="_blank" rel="noopener noreferrer">{website}</a>
         <form onSubmit={event => { event.preventDefault(); void claimCode(); }}>
           <label className="ma-field">Mã liên kết trên website<input className="ma-link-code-input" value={code} onChange={event => setCode(event.target.value)} maxLength={80} autoComplete="off" autoCapitalize="none" spellCheck={false} placeholder="Dán mã liên kết của bạn" disabled={!!busy} /></label>
           <button className="ma-primary" disabled={!code.trim() || !!busy} type="submit">{busy === 'claim' ? 'Đang kiểm tra mã…' : 'Gửi mã để xác nhận liên kết'}</button>

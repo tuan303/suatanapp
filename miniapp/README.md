@@ -129,3 +129,5 @@ Tài liệu tham chiếu đã kiểm tra ngày 30/10/2026:
 Kiểm thử tự động dùng dữ liệu và Zalo Graph giả lập; không gửi email, tạo đơn thử trên Firebase thật hoặc tự xác nhận liên kết. Luồng liên kết đã được chủ tài khoản kiểm tra trên thiết bị thật ngày 03/11/2026. Các nghiệp vụ mới cần đối chiếu lại sau khi triển khai.
 
 Chạy `npm test`, `npm run typecheck`, `npm run build` trong thư mục `miniapp`. Kiểm thử bao phủ phiên, quyền chính chủ, cấu trúc snapshot, giao dịch ghi, hạn theo giờ Việt Nam và quy tắc chấm ăn dùng chung. Giao diện chỉ báo đã lưu sau phản hồi thành công, xóa dữ liệu khi hết phiên và không thay API lỗi bằng dữ liệu mẫu.
+
+Bản `LIVE-20261116.3` mở trang xác minh qua WebView của Zalo và hiển thị nút **Sao chép địa chỉ** để có thể đăng nhập trong Chrome hoặc Safari.
