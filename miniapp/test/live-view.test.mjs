@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { createElement } from 'react';
@@ -21,6 +22,17 @@ test('unverified app shows account gate and never renders fake meals, demo profi
   const html = renderToStaticMarkup(createElement(app.default));
   assert.match(html, /Kết nối đúng tài khoản của bạn/); assert.match(html, /Kiểm tra tài khoản Zalo/);
   assert.doesNotMatch(html, /Nguyễn Minh Anh|Đã chấm 07:12|Đã chấm 12:08|Dữ liệu minh họa|Xác nhận đăng ký mẫu|Phở bò/);
+});
+
+test('a handoff prompts for an explicit Zalo action without rendering the code', () => {
+  const handoffCode = 'SAMPLE_link_CODE_1234567';
+  const html = renderToStaticMarkup(createElement(account.AccountLinkPanel, {
+    apiOrigin: 'https://suatanapp.vercel.app', development: false, handoffCode,
+  }));
+  assert.match(html, /Yêu cầu liên kết từ website/);
+  assert.match(html, /<button[^>]*>Tiếp tục liên kết<\/button>/);
+  assert.ok(!html.includes(handoffCode));
+  assert.doesNotMatch(html, /Mã liên kết trên website|Tài khoản đã xác minh/);
 });
 
 test('opening account panel with a lifted valid session renders linked profile without rechecking SDK', () => {
@@ -46,4 +58,40 @@ test('held or off-day history displays actual taps without claiming a missing me
   const off = renderToStaticMarkup(createElement(app.MealDayCard, { day: { ...day, hold: null, result: { ...day.result, offDay: true,
     meals: { breakfast: { code: 'off_day', time: '07:10' }, lunch: { code: 'off_day', time: '12:05' } } } } }));
   assert.match(off, /Lượt chấm tham khảo/); assert.match(off, /không tính vào suất tháng hoặc vi phạm/); assert.match(off, /07:10/);
+});
+
+test('exempt and unknown meal states render the web wording and a neutral label, never a missed-meal warning', () => {
+  const day = { date: '2026-11-03', hold: null, result: { date: '2026-11-03', offDay: false,
+    meals: { breakfast: { code: 'unknown', time: null }, lunch: { code: 'exempt', time: null } }, unrecognized: [] } };
+  const html = renderToStaticMarkup(createElement(app.MealDayCard, { day }));
+  assert.match(html, /Chưa xác định/); assert.match(html, /Miễn chấm ăn/);
+  assert.doesNotMatch(html, /ma-text-warn|Chưa có lượt chấm|Chưa thể kết luận/);
+  const held = renderToStaticMarkup(createElement(app.MealDayCard, { day: { ...day, hold: 'guarded' } }));
+  assert.match(held, /Miễn chấm ăn/); assert.match(held, /Chưa thể kết luận đối soát/);
+});
+
+// React separates adjacent text nodes with comments in static markup.
+const visibleText = html => html.replace(/<!-- -->/g, '');
+const occurrences = (html, phrase) => html.split(phrase).length - 1;
+
+test('a day held by the exemption check says why and keeps concluded meals readable', () => {
+  const day = { date: '2026-11-03', hold: 'Thông tin miễn chấm đang được kiểm tra', result: { date: '2026-11-03', offDay: false,
+    meals: { breakfast: { code: 'ok', time: '07:30' }, lunch: { code: 'pending', time: null } }, unrecognized: [] } };
+  const html = visibleText(renderToStaticMarkup(createElement(app.MealDayCard, { day })));
+  assert.match(html, /Cần đối chiếu dữ liệu/); assert.match(html, /<p class="ma-history-note">Thông tin miễn chấm đang được kiểm tra\.<\/p>/);
+  assert.match(html, /07:30<\/strong><small class="">Đã chấm ăn<\/small>/);
+  assert.equal(occurrences(html, 'Chưa thể kết luận đối soát'), 1);
+  assert.doesNotMatch(html, /Chưa chốt dữ liệu|ma-text-warn/);
+  // Hold codes keep holding every meal of the day and add no note.
+  const conflict = visibleText(renderToStaticMarkup(createElement(app.MealDayCard, { day: { ...day, hold: 'conflict' } })));
+  assert.equal(occurrences(conflict, 'Chưa thể kết luận đối soát'), 2); assert.doesNotMatch(conflict, /conflict|Thông tin miễn chấm/);
+});
+
+test('the build label shown in the app is the one the deployment guide and README tell staff to check', async () => {
+  const source = await readFile(new URL('../src/lib/appVersion.ts', import.meta.url), 'utf8');
+  const label = /ACCOUNT_LINK_BUILD = '(LIVE-\d{8}\.\d+)'/.exec(source)?.[1];
+  assert.ok(label, 'appVersion.ts must export a LIVE-YYYYMMDD.N label');
+  assert.ok(renderToStaticMarkup(createElement(app.default)).includes(label));
+  for (const doc of ['../../docs/ZALO_LIVE_DATA.md', '../README.md', '../../README.md', '../../docs/ZALO_VIETNAM_API.md', '../../docs/ZALO_DEVICE_TEST.md'])
+    assert.ok((await readFile(new URL(doc, import.meta.url), 'utf8')).includes(label), `${doc} must cite ${label}`);
 });

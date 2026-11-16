@@ -138,7 +138,8 @@ export function resolveAccountApiOrigin(value: unknown, development = false): st
 
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const isToken = (value: unknown): value is string => typeof value === 'string' && value.length >= 1 && value.length <= 8192 && /^[\x21-\x7e]+$/.test(value);
-const validExpiry = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+const validExpiry = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value)
+  && value > 0 && value <= 8_640_000_000_000_000;
 const profileText = (value: unknown, maximum: number, required = false): string => {
   if (typeof value !== 'string' || value.length > maximum || /[\u0000-\u001f\u007f]/.test(value) || (required && !value.trim())) {
     throw new AccountLinkError('invalid_response');
@@ -285,8 +286,9 @@ export function createAccountLinkClient(options: ClientOptions = {}) {
       const code = rawCode.trim();
       if (!/^[A-Za-z0-9_-]{6,80}$/.test(code)) throw new AccountLinkError('invalid_code');
       const data = await post('mini.claim', token, { code }, signal);
-      if (!isToken(data.claimToken)) throw new AccountLinkError('invalid_response');
-      return { claimToken: data.claimToken, expiresAt: freshExpiry(data.expiresAt) };
+      if (!isToken(data.claimToken) || !validExpiry(data.expiresAt)) throw new AccountLinkError('invalid_response');
+      // The device clock only displays the deadline. The server decides claim expiry.
+      return { claimToken: data.claimToken, expiresAt: data.expiresAt };
     },
     async claimStatus(token: string, signal?: AbortSignal): Promise<ClaimState> {
       const data = await post('mini.claimStatus', token, {}, signal);

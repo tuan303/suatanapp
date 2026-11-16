@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { getIdToken, onAuthStateChanged, reauthenticateWithPopup, reload, sendEmailVerification, type User } from 'firebase/auth';
+import { QRCodeCanvas } from 'qrcode.react';
+import { ZALO_MINI_APP_URL, zaloHandoffUrl } from '../../miniapp/shared/link-handoff.mjs';
 import { auth, microsoftProvider } from '../lib/firebase';
 import { Header } from '../components/Header';
 import { Navigation } from '../components/Navigation';
@@ -68,6 +70,14 @@ class ZaloLinkRequestError extends Error {
 const aborted = () => Object.assign(new Error('Request cancelled'), { name: 'AbortError' });
 const suffix = (value: unknown) => typeof value === 'string' && /^\d{1,4}$/.test(value) ? value : undefined;
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+function parseLinkState(result: Record<string, unknown>): LinkState {
+  if (typeof result.linked !== 'boolean') throw new ZaloLinkRequestError('invalid_response', 502);
+  return {
+    linked: result.linked,
+    zaloUserIdSuffix: suffix(result.zaloUserIdSuffix),
+    linkedAt: typeof result.linkedAt === 'number' && Number.isFinite(result.linkedAt) && result.linkedAt > 0 ? result.linkedAt : undefined,
+  };
+}
 
 /** All requests are same-origin and bound to the current authenticated session. */
 export async function requestZaloLinkAction(action: WebAction, challengeId: string | undefined, options: {
@@ -101,6 +111,7 @@ export interface ZaloAccountLinkViewProps {
   link: LinkState | null; challenge: Challenge | null; now: number; busy: BusyAction;
   error: string | null; notice: string | null; revokeConfirm: boolean;
   emailVerificationRequired?: boolean; verificationCooldown?: boolean; onSendVerification?: () => void;
+  recentAuthRequired?: boolean;
   onReload: () => void; onCreate: () => void; onConfirm: () => void; onCopy: () => void;
   onRevokeRequest: () => void; onRevokeCancel: () => void; onRevoke: () => void;
 }
@@ -110,6 +121,9 @@ export function ZaloAccountLinkView(props: ZaloAccountLinkViewProps) {
   const eligible = isSchoolMicrosoftUser(user as Pick<User, 'email' | 'providerData'> | null);
   const remaining = challenge ? Math.max(0, Math.ceil((challenge.expiresAt - now) / 1000)) : 0;
   const expired = !!challenge && (challenge.state === 'expired' || remaining === 0);
+  const handoffUrl = challenge?.state === 'waiting' && !expired ? zaloHandoffUrl(challenge.code) : null;
+  const createLabel = busy === 'creating' ? 'Đang chuẩn bị liên kết…' : props.recentAuthRequired
+    ? 'Xác minh Microsoft để tiếp tục' : expired ? 'Tạo yêu cầu mới' : 'Bắt đầu liên kết';
   const button = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50';
   return <main className="flex-1 min-w-0 w-full max-w-[1080px] mx-auto px-4 py-6 sm:px-6 lg:p-8">
     <Link to="/dashboard" className="inline-flex min-h-11 items-center gap-1 text-sm text-primary hover:underline"><span className="material-symbols-outlined text-[18px]" aria-hidden="true">arrow_back</span>Về tổng quan</Link>
@@ -129,30 +143,53 @@ export function ZaloAccountLinkView(props: ZaloAccountLinkViewProps) {
                   <button type="button" disabled={!!busy || props.verificationCooldown} onClick={props.onSendVerification} className={`${button} bg-primary text-on-primary hover:bg-primary-dark`}>{busy === 'sending-email' ? 'Đang gửi thư xác minh…' : props.verificationCooldown ? 'Đã gửi thư — kiểm tra hộp thư' : 'Gửi thư xác minh email'}</button>
                   <button type="button" disabled={!!busy} onClick={props.onReload} className={`${button} border border-primary/20 bg-surface-container-lowest text-primary`}>{busy === 'loading' ? 'Đang kiểm tra…' : 'Tôi đã xác minh — kiểm tra lại'}</button>
                 </div>
-                <p className="mt-3 text-xs leading-relaxed text-on-surface-variant">Nếu chưa thấy thư, kiểm tra mục Thư rác. Sau khi xác minh, Thầy/Cô tiếp tục tạo mã và xác nhận liên kết Zalo.</p>
+                <p className="mt-3 text-xs leading-relaxed text-on-surface-variant">Nếu chưa thấy thư, kiểm tra mục Thư rác. Sau khi xác minh, Thầy/Cô có thể bắt đầu liên kết Zalo.</p>
               </div> : null}
               {busy === 'loading' && !link ? <p role="status" className="mt-5 text-sm text-on-surface-variant">Đang tải trạng thái liên kết…</p> : null}
               {link?.linked ? <div className="mt-5">
                 <div className="rounded-xl border border-tertiary/20 bg-tertiary-container/50 p-4"><p className="flex items-center gap-2 font-semibold text-on-tertiary-container"><span className="material-symbols-outlined text-[20px]" aria-hidden="true">check_circle</span>Đã liên kết Zalo</p><p className="mt-2 text-sm text-on-surface-variant">{link.zaloUserIdSuffix ? `Tài khoản Zalo có mã kết thúc bằng ••••${link.zaloUserIdSuffix}.` : 'Tài khoản Zalo đã được xác minh.'}</p>{link.linkedAt ? <p className="mt-1 text-sm text-on-surface-variant">Liên kết lúc {new Intl.DateTimeFormat('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', dateStyle: 'short', timeStyle: 'short' }).format(link.linkedAt)}.</p> : null}</div>
+                {!revokeConfirm ? <a href={ZALO_MINI_APP_URL} referrerPolicy="no-referrer" className={`${button} mt-4 mr-2 bg-primary text-on-primary hover:bg-primary-dark`}>Mở ứng dụng Suất ăn trong Zalo</a> : null}
                 {revokeConfirm ? <div className="mt-4 rounded-xl border border-error/25 p-4"><p className="text-sm text-on-surface">Sau khi hủy, tài khoản Zalo này cần liên kết lại để sử dụng dữ liệu suất ăn của Thầy/Cô.</p><div className="mt-3 flex flex-col gap-2 sm:flex-row"><button type="button" disabled={!!busy} onClick={props.onRevoke} className={`${button} bg-error text-on-error`}>{busy === 'revoking' ? 'Đang xác minh và hủy…' : 'Xác nhận hủy liên kết'}</button><button type="button" disabled={!!busy} onClick={props.onRevokeCancel} className={`${button} border border-outline-variant text-on-surface`}>Giữ liên kết</button></div></div>
                   : <button type="button" disabled={!!busy} onClick={props.onRevokeRequest} className={`${button} mt-4 border border-error/25 text-error hover:bg-error-container`}>Hủy liên kết Zalo</button>}
               </div> : null}
-              {!emailVerificationRequired && link && !link.linked && !challenge ? <div className="mt-5"><p className="text-sm text-on-surface-variant">Chưa liên kết Zalo. Tạo mã, nhập mã trong Mini App rồi quay lại trang này để xác nhận.</p><button type="button" disabled={!!busy} onClick={props.onCreate} className={`${button} mt-4 bg-primary text-on-primary hover:bg-primary-dark`}>{busy === 'creating' ? 'Đang xác minh Microsoft…' : 'Xác minh Microsoft và tạo mã'}</button></div> : null}
+              {!emailVerificationRequired && link && !link.linked && !challenge ? <div className="mt-5"><p className="text-sm text-on-surface-variant">Mở Mini App trên điện thoại, sau đó quay lại trang này để xác nhận.</p><button type="button" disabled={!!busy} onClick={props.onCreate} className={`${button} mt-4 bg-primary text-on-primary hover:bg-primary-dark`}>{createLabel}</button></div> : null}
               {!emailVerificationRequired && !link && !busy ? <button type="button" onClick={props.onReload} className={`${button} mt-4 border border-outline-variant text-primary`}>Tải lại trạng thái</button> : null}
               {!emailVerificationRequired && challenge && !link?.linked ? <div className="mt-5 space-y-4">
-                <div className={`rounded-xl border p-4 ${expired ? 'border-outline-variant bg-surface-container-low' : 'border-primary/20 bg-primary-container/40'}`}>
-                  <p className="text-sm font-semibold text-on-surface">{expired ? 'Mã liên kết đã hết hạn' : 'Mã liên kết của Thầy/Cô'}</p>
-                  {!expired ? <><code aria-label="Mã liên kết Zalo" className="mt-3 block select-all break-all rounded-lg bg-surface-container-lowest p-3 font-mono text-xl leading-relaxed text-primary">{challenge.code}</code><div className="mt-3 flex flex-wrap items-center justify-between gap-2"><p role="timer" aria-label="Thời gian còn lại của mã" className="text-sm text-on-surface-variant">Còn {Math.floor(remaining / 60)} phút {String(remaining % 60).padStart(2, '0')} giây</p><button type="button" disabled={!!busy} onClick={props.onCopy} className={`${button} border border-primary/20 bg-surface-container-lowest text-primary`}><span className="material-symbols-outlined text-[18px]" aria-hidden="true">content_copy</span>Sao chép mã</button></div></>
-                    : <p className="mt-2 text-sm text-on-surface-variant">Tạo mã mới để tiếp tục liên kết tài khoản.</p>}
-                </div>
-                {!expired && challenge.state === 'waiting' ? <div><ol className="list-decimal space-y-2 pl-5 text-sm leading-relaxed text-on-surface-variant"><li>Mở Mini App <strong className="text-on-surface">Suất ăn Ngôi Sao Hoàng Mai</strong> bằng tài khoản Zalo của Thầy/Cô.</li><li>Vào phần liên kết tài khoản, dán mã vừa sao chép và gửi yêu cầu.</li><li>Quay lại trang này để xác nhận đúng tài khoản Zalo trên điện thoại của mình.</li></ol><p role="status" className="mt-4 rounded-lg bg-surface-container p-3 text-sm text-on-surface-variant">Đang chờ yêu cầu từ Zalo Mini App…</p></div> : null}
-                {!expired && challenge.state === 'pending' ? <div className="rounded-xl border border-primary/20 p-4"><p className="font-semibold text-on-surface">Có yêu cầu liên kết từ Zalo</p><p className="mt-2 text-sm leading-relaxed text-on-surface-variant">{challenge.zaloUserIdSuffix ? `Mã tài khoản kết thúc bằng ••••${challenge.zaloUserIdSuffix}. ` : ''}Chỉ xác nhận khi Thầy/Cô vừa nhập mã trên điện thoại bằng tài khoản Zalo của mình.</p><button type="button" disabled={!!busy} onClick={props.onConfirm} className={`${button} mt-4 w-full bg-primary text-on-primary hover:bg-primary-dark sm:w-auto`}>{busy === 'confirming' ? 'Đang xác nhận…' : 'Xác nhận liên kết tài khoản Zalo này'}</button></div> : null}
-                {expired ? <button type="button" disabled={!!busy} onClick={props.onCreate} className={`${button} bg-primary text-on-primary`}>{busy === 'creating' ? 'Đang xác minh Microsoft…' : 'Xác minh Microsoft và tạo mã mới'}</button> : null}
+                {expired ? <div className="rounded-xl border border-outline-variant bg-surface-container-low p-4">
+                  <p className="mb-3 text-sm font-semibold text-on-surface">Mã liên kết đã hết hạn</p>
+                  <button type="button" disabled={!!busy} onClick={props.onCreate} className={`${button} bg-primary text-on-primary`}>{createLabel}</button>
+                </div> : <>
+                  <p role="timer" aria-label="Thời gian còn lại để xác nhận" className="text-sm text-on-surface-variant">Còn {Math.floor(remaining / 60)} phút {String(remaining % 60).padStart(2, '0')} giây</p>
+                  {challenge.state === 'waiting' ? <div className="rounded-xl border border-primary/20 bg-primary-container/30 p-4 sm:p-5">
+                    <div className="flex flex-col gap-5 sm:flex-row">
+                      {handoffUrl ? <div className="hidden shrink-0 sm:block"><QRCodeCanvas value={handoffUrl} size={180} marginSize={4} aria-label="Mã QR để mở Mini App Suất ăn" className="rounded-lg border border-outline-variant" /></div> : null}
+                      <div className="min-w-0 flex-1">
+                        <h3 className="font-semibold text-on-surface">Mở Mini App để gửi yêu cầu</h3>
+                        {handoffUrl ? <>
+                          <p className="mt-2 hidden text-sm text-on-surface-variant sm:block">Trên máy tính, dùng Zalo trên điện thoại quét mã QR.</p>
+                          <a href={handoffUrl} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className={`${button} mt-3 bg-primary text-on-primary hover:bg-primary-dark`}>Mở trong Zalo</a>
+                        </> : null}
+                        <p className="mt-3 text-sm leading-relaxed text-on-surface-variant">Bấm tiếp tục trong Mini App rồi quay lại tab này để xác nhận. Chỉ dùng mã hoặc QR cho tài khoản của mình.</p>
+                        <p role="status" className="mt-2 text-sm font-medium text-on-surface">Đang chờ yêu cầu từ Zalo Mini App…</p>
+                      </div>
+                    </div>
+                    <details className="mt-4 border-t border-primary/15 pt-3">
+                      <summary className="cursor-pointer text-sm font-medium text-primary">Dùng mã liên kết thủ công</summary>
+                      <code aria-label="Mã liên kết Zalo" className="mt-3 block select-all break-all rounded-lg bg-surface-container-lowest p-3 font-mono text-lg text-primary">{challenge.code}</code>
+                      <button type="button" disabled={!!busy} onClick={props.onCopy} className={`${button} mt-2 border border-primary/20 bg-surface-container-lowest text-primary`}>Sao chép mã</button>
+                    </details>
+                  </div> : null}
+                  {challenge.state === 'pending' ? <div className="rounded-xl border border-primary/20 p-4">
+                    <p className="font-semibold text-on-surface">Có yêu cầu liên kết từ Zalo</p>
+                    <p className="mt-2 text-sm leading-relaxed text-on-surface-variant">{challenge.zaloUserIdSuffix ? `Mã tài khoản kết thúc bằng ••••${challenge.zaloUserIdSuffix}. ` : ''}Chỉ xác nhận nếu Thầy/Cô vừa gửi yêu cầu trong Mini App bằng tài khoản Zalo của mình.</p>
+                    <button type="button" disabled={!!busy} onClick={props.onConfirm} className={`${button} mt-4 w-full bg-primary text-on-primary hover:bg-primary-dark sm:w-auto`}>{busy === 'confirming' ? 'Đang xác nhận…' : props.recentAuthRequired ? 'Xác minh Microsoft và xác nhận' : 'Xác nhận liên kết tài khoản Zalo này'}</button>
+                  </div> : null}
+                </>}
                 {error && !expired ? <button type="button" disabled={!!busy} onClick={props.onReload} className={`${button} border border-outline-variant text-primary`}>Kiểm tra lại trạng thái</button> : null}
               </div> : null}
             </>}
     </section>
-    <p className="mt-4 max-w-[760px] text-sm leading-relaxed text-on-surface-variant">Liên kết chỉ cho phép tài khoản Zalo truy cập các chức năng suất ăn cá nhân đã được cấp quyền. Thao tác tạo mã và hủy liên kết yêu cầu xác minh lại qua Microsoft.</p>
+    <p className="mt-4 max-w-[760px] text-sm leading-relaxed text-on-surface-variant">Sau khi liên kết, Thầy/Cô dùng tài khoản Zalo này để truy cập các chức năng suất ăn cá nhân được cấp quyền.</p>
   </main>;
 }
 
@@ -165,6 +202,7 @@ export default function ZaloAccountLink() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [emailVerificationRequired, setEmailVerificationRequired] = useState(false);
+  const [recentAuthRequired, setRecentAuthRequired] = useState(false);
   const [verificationCooldown, setVerificationCooldown] = useState(false);
   const [revokeConfirm, setRevokeConfirm] = useState(false);
   const [pollPaused, setPollPaused] = useState(false);
@@ -184,8 +222,7 @@ export default function ZaloAccountLink() {
   const readLink = async (uid: string, ticket: number) => {
     const result = await api('web.getLink', uid, ticket);
     if (!current(ticket, uid)) throw aborted();
-    if (typeof result.linked !== 'boolean') throw new ZaloLinkRequestError('invalid_response', 502);
-    const state = { linked: result.linked, zaloUserIdSuffix: suffix(result.zaloUserIdSuffix), linkedAt: typeof result.linkedAt === 'number' && Number.isFinite(result.linkedAt) && result.linkedAt > 0 ? result.linkedAt : undefined };
+    const state = parseLinkState(result);
     setLink(state);
     setEmailVerificationRequired(false);
     if (state.linked) setChallenge(null);
@@ -210,7 +247,7 @@ export default function ZaloAccountLink() {
     const unsubscribe = onAuthStateChanged(auth, next => {
       const changed = userRef.current?.uid !== next?.uid;
       userRef.current = next; setUser(next); setAuthLoading(false);
-      if (changed || !next) { invalidate(); busyRef.current = null; setLink(null); setChallenge(null); setBusy(null); setError(null); setNotice(null); setRevokeConfirm(false); setPollPaused(false); setEmailVerificationRequired(false); setVerificationCooldown(false); }
+      if (changed || !next) { invalidate(); busyRef.current = null; setLink(null); setChallenge(null); setBusy(null); setError(null); setNotice(null); setRevokeConfirm(false); setPollPaused(false); setEmailVerificationRequired(false); setRecentAuthRequired(false); setVerificationCooldown(false); }
     });
     return () => { mounted.current = false; invalidate(); unsubscribe(); };
   }, []);
@@ -246,6 +283,7 @@ export default function ZaloAccountLink() {
     let stopped = false, timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
     const poll = async () => {
+      timer = undefined;
       if (stopped || !current(ticket, uid) || Date.now() >= challenge.expiresAt) return;
       try {
         const result = await api('web.challengeStatus', uid, ticket, id, false, controller);
@@ -263,8 +301,19 @@ export default function ZaloAccountLink() {
         if (!stopped && current(ticket, uid) && (failure as { name?: string })?.name !== 'AbortError') { showFailure(failure); setPollPaused(true); }
       }
     };
+    const resumePoll = () => {
+      if (document.visibilityState !== 'visible' || timer === undefined) return;
+      clearTimeout(timer);
+      void poll();
+    };
     timer = setTimeout(poll, 1500);
-    return () => { stopped = true; if (timer) clearTimeout(timer); controller.abort(); };
+    document.addEventListener('visibilitychange', resumePoll);
+    return () => {
+      stopped = true;
+      if (timer !== undefined) clearTimeout(timer);
+      document.removeEventListener('visibilitychange', resumePoll);
+      controller.abort();
+    };
   }, [user?.uid, challenge?.challengeId, challenge?.state === 'expired', busy, pollPaused]);
 
   const perform = async (action: Exclude<BusyAction, null>, work: (uid: string, ticket: number) => Promise<void>) => {
@@ -272,7 +321,13 @@ export default function ZaloAccountLink() {
     if (!owner || !isSchoolMicrosoftUser(owner) || busyRef.current) return;
     invalidate(); const uid = owner.uid, ticket = generation.current;
     busyRef.current = action; setBusy(action); setError(null); setNotice(null); setPollPaused(true);
-    try { await work(uid, ticket); } catch (failure) { if (current(ticket, uid)) showFailure(failure); }
+    try { await work(uid, ticket); } catch (failure) {
+      if (!current(ticket, uid)) return;
+      if ((action === 'creating' || action === 'confirming') && failure instanceof ZaloLinkRequestError && failure.code === 'recent_auth_required') {
+        setRecentAuthRequired(true);
+        setNotice('Phiên Microsoft cần được xác minh lại để tiếp tục liên kết.');
+      } else showFailure(failure);
+    }
     finally { if (current(ticket, uid)) { busyRef.current = null; setBusy(null); setPollPaused(false); } }
   };
   const reverify = async (uid: string, ticket: number) => {
@@ -295,19 +350,22 @@ export default function ZaloAccountLink() {
     });
   };
   const create = () => void perform('creating', async (uid, ticket) => {
-    await reverify(uid, ticket);
-    const result = await api('web.createChallenge', uid, ticket, undefined, true);
+    if (recentAuthRequired) await reverify(uid, ticket);
+    const result = await api('web.createChallenge', uid, ticket, undefined, recentAuthRequired);
     if (typeof result.challengeId !== 'string' || !/^[a-f0-9]{64}$/.test(result.challengeId) || typeof result.code !== 'string' || !/^[A-Za-z0-9_-]{6,64}$/.test(result.code)
       || typeof result.expiresAt !== 'number' || !Number.isFinite(result.expiresAt) || result.expiresAt <= Date.now()) throw new ZaloLinkRequestError('invalid_response', 502);
+    setRecentAuthRequired(false);
     setNow(Date.now()); setChallenge({ challengeId: result.challengeId, code: result.code, expiresAt: result.expiresAt, state: 'waiting' });
   });
   const confirm = () => {
     if (!challenge || challenge.state !== 'pending' || challenge.expiresAt <= Date.now()) return;
     const id = challenge.challengeId;
     void perform('confirming', async (uid, ticket) => {
-      await api('web.confirmLink', uid, ticket, id);
-      const state = await readLink(uid, ticket);
+      if (recentAuthRequired) await reverify(uid, ticket);
+      const state = parseLinkState(await api('web.confirmLink', uid, ticket, id, recentAuthRequired));
       if (!state.linked) throw new ZaloLinkRequestError('invalid_response', 502);
+      setLink(state);
+      setRecentAuthRequired(false);
       setChallenge(null); setNotice('Đã liên kết tài khoản Zalo thành công.');
     });
   };
@@ -328,7 +386,7 @@ export default function ZaloAccountLink() {
 
   return <div className="mobile-app-shell min-w-0 flex flex-col md:pl-64"><Header /><Navigation />
     <ZaloAccountLinkView authLoading={authLoading} user={user} link={link} challenge={challenge} now={now} busy={busy} error={error} notice={notice} revokeConfirm={revokeConfirm}
-      emailVerificationRequired={emailVerificationRequired} verificationCooldown={verificationCooldown} onSendVerification={sendVerification}
+      emailVerificationRequired={emailVerificationRequired} verificationCooldown={verificationCooldown} onSendVerification={sendVerification} recentAuthRequired={recentAuthRequired}
       onReload={() => void perform('loading', refreshLink)} onCreate={create} onConfirm={confirm} onCopy={copy}
       onRevokeRequest={() => setRevokeConfirm(true)} onRevokeCancel={() => setRevokeConfirm(false)} onRevoke={revoke} />
     <Footer /></div>;

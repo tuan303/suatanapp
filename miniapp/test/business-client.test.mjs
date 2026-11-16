@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url);
 const compiled = await build({ entryPoints: [fileURLToPath(new URL('../src/lib/business.ts', import.meta.url))], bundle: true,
   write: false, platform: 'node', format: 'cjs', packages: 'external', logLevel: 'silent' });
 const module = { exports: {} }; new Function('require', 'module', 'exports', compiled.outputFiles[0].text)(require, module, module.exports);
-const { parseMealSnapshot, createMealBusinessClient, businessReason } = module.exports;
+const { parseMealSnapshot, createMealBusinessClient, businessReason, mealLabels, holdNote, mealHeld } = module.exports;
 const compiledAuth = await build({ entryPoints: [fileURLToPath(new URL('../src/lib/accountLink.ts', import.meta.url))], bundle: true,
   write: false, platform: 'node', format: 'cjs', packages: 'external', logLevel: 'silent' });
 const auth = { exports: {} }; new Function('require', 'module', 'exports', compiledAuth.outputFiles[0].text)(require, auth, auth.exports);
@@ -32,6 +32,60 @@ const fixture = () => ({ version: 1, serverNow: Date.parse('2026-11-03T07:00:00Z
   sync: { lastRunAt: null, lastCompleteAt: null, lastRunComplete: null } });
 const response = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
 
+test('personal DTO accepts explicit lunch exemption without inventing a tap', () => {
+  const raw = fixture();
+  raw.history.days[0].result.meals.lunch = { code: 'exempt', time: null };
+  raw.todayMeals.result.meals.lunch = { code: 'exempt', time: null };
+  const parsed = parseMealSnapshot(raw);
+  assert.deepEqual(parsed.history.days[0].result.meals.lunch, { code: 'exempt', time: null });
+  raw.history.days[0].result.meals.breakfast = { code: 'exempt', time: null };
+  assert.equal(parseMealSnapshot(raw).history.days[0].result.meals.breakfast.code, 'exempt');
+  raw.history.days[0].result.meals.breakfast.time = '07:30';
+  assert.throws(() => parseMealSnapshot(raw), error => error.code === 'invalid_response');
+  assert.equal(mealLabels.exempt, 'Miễn chấm ăn');
+});
+
+test('an unknown meal code from a newer server becomes a neutral state while every other field stays strict', () => {
+  const raw = fixture();
+  raw.history.days[0].result.meals.breakfast = { code: 'FAKE_STATUS', time: null, reason: 'future_reason' };
+  raw.todayMeals.result.meals.lunch = { code: 'exempt_breakfast', time: '12:05' };
+  const parsed = parseMealSnapshot(raw);
+  assert.deepEqual(parsed.history.days[0].result.meals.breakfast, { code: 'unknown', time: null, reason: 'future_reason' });
+  assert.deepEqual(parsed.history.days[0].result.meals.lunch, { code: 'ok', time: '12:05' });
+  assert.deepEqual(parsed.todayMeals.result.meals.lunch, { code: 'unknown', time: '12:05' });
+  assert.equal(parsed.registration.allowed, true); assert.equal(parsed.menu.days.length, 5);
+  assert.equal(mealLabels.unknown, 'Chưa xác định');
+  for (const mutate of [meal => meal.code = 42, meal => meal.code = null, meal => delete meal.code, meal => meal.code = 'x'.repeat(31),
+    meal => meal.code = 'bad\u0000code', meal => meal.time = '25:00', meal => delete meal.time, meal => meal.reason = 7]) {
+    const data = fixture(), meal = { code: 'FAKE_STATUS', time: null };
+    data.history.days[0].result.meals.breakfast = meal; mutate(meal);
+    assert.throws(() => parseMealSnapshot(data), error => error.code === 'invalid_response');
+  }
+});
+
+test('a server explanation hold is kept verbatim and holds only pending meals, while hold codes still hold the whole day', () => {
+  const note = 'Thông tin miễn chấm đang được kiểm tra';
+  const raw = fixture();
+  raw.history.days[0].hold = note; raw.todayMeals.hold = note;
+  raw.history.days[0].result.meals.lunch = { code: 'pending', time: null };
+  const parsed = parseMealSnapshot(raw);
+  assert.equal(parsed.history.days[0].hold, note); assert.equal(parsed.todayMeals.hold, note);
+  for (const hold of ['x'.repeat(81), 'Dòng\u0001lỗi', 7]) {
+    const data = fixture(); data.history.days[0].hold = hold;
+    assert.throws(() => parseMealSnapshot(data), error => error.code === 'invalid_response');
+  }
+  assert.equal(holdNote(note), note);
+  // A hold code this build does not know yet stays a whole-day hold instead of becoming a note.
+  for (const hold of ['conflict', 'guarded', 'expired', 'future_code', '', null]) assert.equal(holdNote(hold), null);
+  const day = parsed.history.days[0];
+  assert.equal(mealHeld(day, day.result.meals.lunch.code), true);
+  for (const code of ['ok', 'not_registered', 'extra', 'off_day', 'exempt', 'unknown']) assert.equal(mealHeld({ hold: note }, code), false);
+  for (const hold of ['conflict', 'guarded', 'expired', 'future_code']) {
+    assert.equal(mealHeld({ hold }, 'ok'), true); assert.equal(mealHeld({ hold }, 'pending'), true); assert.equal(mealHeld({ hold }, 'exempt'), false);
+  }
+  assert.equal(mealHeld({ hold: null }, 'pending'), false);
+});
+
 test('personal DTO preserves real state and strips unreviewed role/admin/token fields', () => {
   const raw = fixture(); raw.profile.admin = true; raw.profile.role = 'admin'; raw.sessionToken = token;
   raw.history.days[0].result.unrecognized = ['08:05']; raw.history.days[0].result.unrecognizedCount = 25;
@@ -49,7 +103,7 @@ test('invalid or mismatched dates, months, history and menu never become display
     data => data.history.days[0].date = '2026-11-02', data => data.history.days.push(copy(data.history.days[0])),
     data => data.history.days = [day('2026-11-04')], data => data.todayMeals = day('2026-11-02'),
     data => data.menu.days[0].date = '2026-11-03', data => data.menu.days.pop(), data => data.menu.weekId = '2026-11-03',
-    data => data.history.days[0].result.meals.breakfast.time = '25:01', data => data.history.days[0].result.meals.breakfast.code = 'FAKE_STATUS',
+    data => data.history.days[0].result.meals.breakfast.time = '25:01', data => data.history.days[0].result.meals.breakfast.code = 7,
     data => data.survey.answers = { uid: 'FORGED' }, data => data.profile.email = 'a'.repeat(300), data => data.registration.allowed = 'true'];
   for (const mutate of mutations) { const data = fixture(); mutate(data); assert.throws(() => parseMealSnapshot(data), error => error.code === 'invalid_response'); }
 });

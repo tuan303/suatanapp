@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AccountLinkError, accountLinkMessage, createAccountLinkClient } from '../lib/accountLink';
+import { AccountLinkError, accountLinkMessage, classifyZaloSdkEnvironment, createAccountLinkClient } from '../lib/accountLink';
 import type { LinkedSession } from '../lib/accountLink';
 import { ACCOUNT_LINK_BUILD } from '../lib/appVersion';
 
 type View = 'start' | 'code' | 'waiting' | 'linked';
-type Busy = 'check' | 'claim' | 'finish' | 'refresh' | 'logout' | null;
+type Busy = 'check' | 'claim' | 'finish' | 'refresh' | 'logout' | 'website' | null;
 const timeLabel = (value: number) => new Intl.DateTimeFormat('vi-VN', {
   timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit', second: '2-digit',
 }).format(new Date(value));
@@ -14,7 +14,16 @@ export function AccountLinkPanel({
   development = import.meta.env.DEV,
   initialSession = null,
   onSessionChange,
-}: { apiOrigin?: string; development?: boolean; initialSession?: LinkedSession | null; onSessionChange?: (session: LinkedSession | null) => void }) {
+  handoffCode = null,
+  onHandoffConsumed,
+}: {
+  apiOrigin?: string;
+  development?: boolean;
+  initialSession?: LinkedSession | null;
+  onSessionChange?: (session: LinkedSession | null) => void;
+  handoffCode?: string | null;
+  onHandoffConsumed?: (code: string) => void;
+}) {
   const setup = useMemo(() => {
     try { return { client: createAccountLinkClient({ origin: apiOrigin, development }), error: null }; }
     catch (error) { return { client: null, error: accountLinkMessage(error) }; }
@@ -24,6 +33,7 @@ export function AccountLinkPanel({
   const [view, setView] = useState<View>(() => initialSession && initialSession.expiresAt > Date.now() ? 'linked' : 'start');
   const [busy, setBusy] = useState<Busy>(null);
   const [code, setCode] = useState('');
+  const [manualEntry, setManualEntry] = useState(false);
   const [session, setSession] = useState<LinkedSession | null>(() => initialSession && initialSession.expiresAt > Date.now() ? initialSession : null);
   const [claimExpiry, setClaimExpiry] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -82,20 +92,15 @@ export function AccountLinkPanel({
     };
   }, [client, initialSession?.sessionToken]);
 
-  function expireClaim() {
+  function endClaim(error: AccountLinkError) {
     invalidate();
     claimToken.current = '';
     setClaimExpiry(null);
     setView(zaloToken.current ? 'code' : 'start');
     setBusy(null);
     setPollPaused(false);
-    setError(accountLinkMessage(new AccountLinkError('expired')));
+    setError(accountLinkMessage(error));
   }
-  useEffect(() => {
-    if (!claimExpiry || view !== 'waiting') return;
-    const timer = setTimeout(expireClaim, Math.max(0, claimExpiry - Date.now()));
-    return () => clearTimeout(timer);
-  }, [claimExpiry, view]);
   useEffect(() => {
     if (!session) return;
     const timer = setTimeout(() => {
@@ -116,6 +121,7 @@ export function AccountLinkPanel({
     setBusy('check');
     setError(null);
     setNotice(null);
+    let sendingHandoff = false;
     try {
       const token = await client.getZaloToken(request.signal);
       if (!request.active()) return;
@@ -123,23 +129,58 @@ export function AccountLinkPanel({
       const result = await client.login(token, request.signal);
       if (!request.active()) return;
       if (result.linked) {
+        if (handoffCode) onHandoffConsumed?.(handoffCode);
         updateSession(result);
         zaloToken.current = '';
         setView('linked');
+      } else if (handoffCode) {
+        sendingHandoff = true;
+        setBusy('claim');
+        await sendClaim(request, handoffCode);
+        if (request.active()) onHandoffConsumed?.(handoffCode);
       } else setView('code');
     } catch (caught) {
-      if (request.active()) { zaloToken.current = ''; setError(accountLinkMessage(caught)); }
+      if (!request.active()) return;
+      if (sendingHandoff && handoffCode && caught instanceof AccountLinkError
+        && ['challenge_unavailable', 'expired', 'link_conflict'].includes(caught.code)) {
+        onHandoffConsumed?.(handoffCode);
+        setView('code');
+      } else {
+        zaloToken.current = '';
+      }
+      setError(accountLinkMessage(caught));
     } finally { if (request.active()) setBusy(null); }
   }
 
-  async function pollClaim(request: ReturnType<typeof begin>, expiresAt: number) {
+  async function openWebsite() {
+    if (!website || busy) return;
+    const request = begin();
+    setBusy('website');
+    setError(null);
+    setNotice(null);
+    try {
+      const { openOutApp } = await import('zmp-sdk');
+      if (!request.active()) return;
+      // The bridge may finish only after the app is foregrounded again.
+      setBusy(null);
+      await openOutApp({ url: website });
+    } catch {
+      if (request.active()) {
+        setManualEntry(true);
+        setNotice('Bạn có thể mở trang liên kết bằng địa chỉ ở phần nhập mã bên dưới.');
+      }
+    } finally { if (request.active()) setBusy(null); }
+  }
+
+  async function pollClaim(request: ReturnType<typeof begin>) {
     if (!client || !request.active()) return;
-    if (Date.now() >= expiresAt) { expireClaim(); return; }
+    let websiteConfirmed = false;
     try {
       const result = await client.claimStatus(claimToken.current, request.signal);
       if (!request.active()) return;
-      if (result.state === 'expired' || (result.state === 'pending' && result.expiresAt <= Date.now())) { expireClaim(); return; }
+      if (result.state === 'expired') { endClaim(new AccountLinkError('expired')); return; }
       if (result.state === 'approved') {
+        websiteConfirmed = true;
         setBusy('finish');
         const login = await client.login(zaloToken.current, request.signal);
         if (!request.active()) return;
@@ -156,16 +197,41 @@ export function AccountLinkPanel({
       }
       setPollPaused(false);
       setError(null);
-      const deadline = Math.min(expiresAt, result.expiresAt);
-      setClaimExpiry(deadline);
-      pollTimer.current = setTimeout(() => { void pollClaim(request, deadline); }, 3000);
+      setClaimExpiry(result.expiresAt);
+      pollTimer.current = setTimeout(() => { void pollClaim(request); }, 3000);
     } catch (caught) {
       if (!request.active()) return;
+      const code = caught instanceof AccountLinkError ? caught.code : null;
+      if (websiteConfirmed || code === 'auth_required') {
+        invalidate();
+        clearIdentity();
+        setView('start');
+        setBusy(null);
+        if (websiteConfirmed) setNotice('Website đã xác nhận liên kết. Bấm Kiểm tra tài khoản Zalo để mở dữ liệu cá nhân.');
+        setError(accountLinkMessage(caught));
+        return;
+      }
+      if (caught instanceof AccountLinkError && (code === 'expired' || code === 'challenge_unavailable')) {
+        endClaim(caught);
+        return;
+      }
       setBusy(null);
       setPollPaused(true);
       setError(accountLinkMessage(caught));
-      if (caught instanceof AccountLinkError && ['expired', 'challenge_unavailable', 'auth_required'].includes(caught.code)) expireClaim();
     }
+  }
+
+  async function sendClaim(request: ReturnType<typeof begin>, value: string) {
+    if (!client) return;
+    const result = await client.claim(zaloToken.current, value, request.signal);
+    if (!request.active()) return;
+    claimToken.current = result.claimToken;
+    setClaimExpiry(result.expiresAt);
+    setCode('');
+    setView('waiting');
+    setBusy(null);
+    setPollPaused(false);
+    void pollClaim(request);
   }
 
   async function claimCode() {
@@ -175,26 +241,17 @@ export function AccountLinkPanel({
     setError(null);
     setNotice(null);
     try {
-      const result = await client.claim(zaloToken.current, code, request.signal);
-      if (!request.active()) return;
-      claimToken.current = result.claimToken;
-      setClaimExpiry(result.expiresAt);
-      setCode('');
-      setView('waiting');
-      setBusy(null);
-      setPollPaused(false);
-      void pollClaim(request, result.expiresAt);
+      await sendClaim(request, code);
     } catch (caught) {
       if (request.active()) setError(accountLinkMessage(caught));
     } finally { if (request.active()) setBusy(null); }
   }
   function retryPoll() {
-    if (!claimToken.current || !claimExpiry || busy) return;
-    if (Date.now() >= claimExpiry) { expireClaim(); return; }
+    if (!claimToken.current || busy) return;
     const request = begin();
     setPollPaused(false);
     setError(null);
-    void pollClaim(request, claimExpiry);
+    void pollClaim(request);
   }
   function newCode() {
     invalidate();
@@ -203,7 +260,7 @@ export function AccountLinkPanel({
     setCode('');
     setBusy(null);
     setError(null);
-    setNotice('Hãy tạo mã mới trên website rồi dán vào đây.');
+    setNotice('Hãy tạo yêu cầu mới trên website, rồi bấm Mở trong Zalo.');
     setView(zaloToken.current ? 'code' : 'start');
   }
   async function refreshProfile() {
@@ -242,34 +299,47 @@ export function AccountLinkPanel({
     }
   }
 
+  const canContinueHandoff = !!handoffCode && (view === 'start' || view === 'code');
+  const accountButtonBusy = busy === 'check' ? 'Đang kiểm tra tài khoản…' : busy === 'claim' ? 'Đang gửi yêu cầu…' : null;
+
   return <section className="ma-account-link" aria-busy={!!busy}>
     <span className="ma-eyebrow">LIÊN KẾT TÀI KHOẢN NHÀ TRƯỜNG</span>
     <h2 id="ma-dialog-title">{view === 'linked' ? 'Tài khoản đã xác minh' : 'Kết nối đúng tài khoản của bạn'}</h2>
-    <p>Liên kết tài khoản Zalo với tài khoản Microsoft của nhà trường bằng mã dùng một lần và xác nhận trên website.</p>
+    <p>{view === 'linked' ? 'Tài khoản Zalo này đã được liên kết với tài khoản nhà trường.' : 'Xác minh tài khoản Microsoft của nhà trường một lần để sử dụng Suất ăn trên Zalo.'}</p>
 
     {(!client?.configured || setup.error) && <div className="ma-link-config" role="status"><strong>Chưa cấu hình kết nối</strong><p>{setup.error || 'Nhà trường cần cấu hình địa chỉ API trước khi bật liên kết tài khoản.'}</p></div>}
     {error && <div className="ma-link-error" role="alert">{error}</div>}
     {notice && <div className="ma-link-info" role="status">{notice}</div>}
 
-    {view === 'start' && <>
-      <div className="ma-link-how"><strong>Trước khi bắt đầu</strong><p>Mở Mini App trong ứng dụng Zalo. Bạn sẽ xác thực tài khoản nhà trường trên website ở bước tiếp theo.</p></div>
-      <button className="ma-primary" disabled={!client?.configured || !!busy} onClick={() => { void checkAccount(); }}>{busy === 'check' ? 'Đang kiểm tra tài khoản…' : 'Kiểm tra tài khoản Zalo'}</button>
+    {(view === 'start' || canContinueHandoff) && <>
+      {canContinueHandoff
+        ? <div className="ma-link-how"><strong>Yêu cầu liên kết từ website</strong><p>Tiếp tục bằng tài khoản Zalo đang dùng, rồi xác nhận trên trang Suất ăn của nhà trường.</p></div>
+        : <div className="ma-link-how"><strong>Kiểm tra tài khoản Zalo</strong><p>Nếu tài khoản đã liên kết, bạn có thể mở dữ liệu suất ăn ngay.</p></div>}
+      <button type="button" className="ma-primary" disabled={!client?.configured || !!busy} onClick={() => { void checkAccount(); }}>{accountButtonBusy || (canContinueHandoff ? 'Tiếp tục liên kết' : 'Kiểm tra tài khoản Zalo')}</button>
     </>}
 
-    {view === 'code' && website && <>
-      <ol className="ma-link-steps"><li><span>1</span><div>Mở website bằng trình duyệt:<code className="ma-link-address">{website}</code></div></li><li><span>2</span><div>Đăng nhập tài khoản Microsoft của trường và tạo mã liên kết.</div></li><li><span>3</span><div>Dán mã vào đây, sau đó quay lại website để xác nhận liên kết.</div></li></ol>
-      <form onSubmit={event => { event.preventDefault(); void claimCode(); }}>
-        <label className="ma-field">Mã liên kết trên website<input className="ma-link-code-input" value={code} onChange={event => setCode(event.target.value)} maxLength={80} autoComplete="off" autoCapitalize="none" spellCheck={false} placeholder="Dán mã liên kết của bạn" disabled={!!busy} /></label>
-        <button className="ma-primary" disabled={!code.trim() || !!busy} type="submit">{busy === 'claim' ? 'Đang kiểm tra mã…' : 'Gửi mã để xác nhận liên kết'}</button>
-      </form>
-      <button className="ma-link-secondary" disabled={!!busy} onClick={() => { invalidate(); clearIdentity(); setView('start'); setError(null); setNotice(null); }}>Kiểm tra lại tài khoản Zalo</button>
+    {view === 'code' && !canContinueHandoff && website && <>
+      <div className="ma-link-how"><strong>Xác minh tài khoản nhà trường</strong><p>Đăng nhập Microsoft trên website, rồi chọn Mở trong Zalo.</p></div>
+      {classifyZaloSdkEnvironment() === 'miniapp'
+        ? <button type="button" className="ma-primary" disabled={!!busy} onClick={() => { void openWebsite(); }}>{busy === 'website' ? 'Đang mở trang xác minh…' : 'Mở trang xác minh Microsoft'}</button>
+        : <a className="ma-primary ma-link-action" href={website} target="_blank" rel="noopener noreferrer">Mở trang xác minh Microsoft</a>}
+      <button type="button" className="ma-link-secondary" aria-expanded={manualEntry} aria-controls="ma-manual-link" onClick={() => setManualEntry(previous => !previous)}>{manualEntry ? 'Ẩn phần nhập mã' : 'Nhập mã thủ công'}</button>
+      <div id="ma-manual-link" hidden={!manualEntry}>
+        <a className="ma-link-address" href={website} target="_blank" rel="noopener noreferrer">{website}</a>
+        <form onSubmit={event => { event.preventDefault(); void claimCode(); }}>
+          <label className="ma-field">Mã liên kết trên website<input className="ma-link-code-input" value={code} onChange={event => setCode(event.target.value)} maxLength={80} autoComplete="off" autoCapitalize="none" spellCheck={false} placeholder="Dán mã liên kết của bạn" disabled={!!busy} /></label>
+          <button className="ma-primary" disabled={!code.trim() || !!busy} type="submit">{busy === 'claim' ? 'Đang kiểm tra mã…' : 'Gửi mã để xác nhận liên kết'}</button>
+        </form>
+      </div>
+      <button type="button" className="ma-link-secondary" disabled={!!busy} onClick={() => { void checkAccount(); }}>Kiểm tra lại tài khoản Zalo</button>
     </>}
 
     {view === 'waiting' && website && <>
-      <div className="ma-link-waiting" role="status"><span className="ma-link-pulse" /><strong>{busy === 'finish' ? 'Đang hoàn tất xác minh…' : 'Chờ xác nhận trên website'}</strong><p>Quay lại website nhà trường và bấm xác nhận liên kết. Chỉ sau bước đó, Mini App mới được cấp phiên cá nhân.</p>{claimExpiry && <small>Yêu cầu có hiệu lực đến {timeLabel(claimExpiry)}.</small>}</div>
-      <code className="ma-link-address">{website}</code>
+      <div className="ma-link-waiting" role="status"><span className="ma-link-pulse" /><strong>{busy === 'finish' ? 'Đang hoàn tất xác minh…' : 'Chờ xác nhận trên website'}</strong><p>Quay lại tab Suất ăn đang mở trong trình duyệt và bấm Xác nhận liên kết tài khoản Zalo này.</p>{claimExpiry && <small>Yêu cầu có hiệu lực đến {timeLabel(claimExpiry)}.</small>}</div>
       {pollPaused && <button className="ma-primary" disabled={!!busy} onClick={retryPoll}>Kiểm tra lại trạng thái</button>}
-      <button className="ma-link-secondary" disabled={!!busy} onClick={newCode}>Dùng mã liên kết mới</button>
+      {handoffCode
+        ? <button type="button" className="ma-link-secondary" disabled={!!busy} onClick={() => { void checkAccount(); }}>Tiếp tục yêu cầu mới</button>
+        : <button type="button" className="ma-link-secondary" disabled={!!busy} onClick={newCode}>Tạo yêu cầu khác</button>}
     </>}
 
     {view === 'linked' && session && <>

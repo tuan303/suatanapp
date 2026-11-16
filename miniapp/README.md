@@ -81,7 +81,7 @@ Luồng liên kết đã có mã nguồn, kiểm thử giả lập và API máy 
 
 `server/verify-zalo-identity.mjs` xác minh danh tính Zalo. `server/account-links.mjs` quản lý mã một lần, xác nhận web, phiên cá nhân 8 giờ và thu hồi liên kết. `api/zalo.ts` là RPC giới hạn thao tác; `api/_lib/zalo-runtime.mjs` xác minh Microsoft và kết nối Firebase Admin. Không import các module server vào mã client.
 
-Trang web `/lien-ket-zalo` có nút xác minh Microsoft để tạo mã và nút xác nhận khi Mini App nhận mã; không tự liên kết chỉ nhờ nhập mã. Dashboard có lối mở trang này. Trạng thái liên kết thật chỉ xuất hiện khi server đã được cấu hình và endpoint đã được triển khai.
+Từ bản `LIVE-20261116.2`, mở `/lien-ket-zalo`, chọn **Bắt đầu liên kết** rồi **Mở trong Zalo** hoặc quét QR nếu đang dùng máy tính. Bấm **Tiếp tục liên kết** trong Mini App, quay lại đúng tab website để xác nhận. Trang vẫn có cách nhập mã thủ công cho thiết bị không mở được liên kết trực tiếp. [Kiểm thử trên thiết bị](../docs/ZALO_DEVICE_TEST.md)
 
 ## Cấu hình để thử liên kết thật
 

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import schoolLogo from './assets/school-logo.png';
 import { AccountLinkPanel } from './components/AccountLinkPanel';
-import { AccountLinkError, accountLinkMessage, createAccountLinkClient, type LinkedSession } from './lib/accountLink';
-import { businessReason, createMealBusinessClient, mealLabels, validDate, type DayView, type MealSnapshot } from './lib/business';
+import { AccountLinkError, accountLinkMessage, classifyZaloSdkEnvironment, createAccountLinkClient, type LinkedSession } from './lib/accountLink';
+import { businessReason, createMealBusinessClient, holdNote, mealHeld, mealLabels, validDate, type DayView, type MealSnapshot } from './lib/business';
 import { ACCOUNT_LINK_BUILD } from './lib/appVersion';
+import { readZaloHandoffCode, ZALO_LINK_PARAM } from '../shared/link-handoff.mjs';
 
 type Tab = 'home' | 'register' | 'menu' | 'personal';
 type Modal = 'link' | 'survey' | 'event' | 'confirm' | null;
@@ -35,9 +36,14 @@ const isSessionFailure = (error: unknown) => error instanceof AccountLinkError &
 const readError = (error: unknown) => error instanceof AccountLinkError && error.code === 'invalid_request'
   ? 'Dịch vụ suất ăn chưa sẵn sàng cho yêu cầu này. Vui lòng thử lại sau hoặc liên hệ bộ phận CNTT.' : accountLinkMessage(error);
 
+const sentence = (value: string) => /[.!?…]$/.test(value) ? value : `${value}.`;
+const locationHandoffCode = () => typeof window === 'undefined' ? null : readZaloHandoffCode(window.location.search);
+
 export function MealDayCard({ day }: { day: DayView }) {
+  const note = holdNote(day.hold);
   return <article className="ma-card ma-history-item"><div className="ma-history-heading"><strong>{dateLabel(day.date)}</strong><Status tone={day.hold || day.result.offDay ? 'neutral' : 'good'}>{day.hold ? 'Cần đối chiếu dữ liệu' : day.result.offDay ? 'Lượt chấm tham khảo' : 'Ngày phục vụ'}</Status></div>
-    <div className="ma-history-times">{(['breakfast', 'lunch'] as const).map(meal => { const item = day.result.meals[meal]; return <span key={meal}><Icon name={meal === 'breakfast' ? 'sun' : 'bowl'} size={18} /><span>{meal === 'breakfast' ? 'Bữa sáng' : 'Bữa trưa'}<strong>{item.time || '—'}</strong><small className={item.code === 'missing' && !day.hold ? 'ma-text-warn' : ''}>{day.hold ? 'Chưa thể kết luận đối soát' : mealLabels[item.code]}</small></span></span>; })}</div>
+    <div className="ma-history-times">{(['breakfast', 'lunch'] as const).map(meal => { const item = day.result.meals[meal]; return <span key={meal}><Icon name={meal === 'breakfast' ? 'sun' : 'bowl'} size={18} /><span>{meal === 'breakfast' ? 'Bữa sáng' : 'Bữa trưa'}<strong>{item.time || '—'}</strong><small className={item.code === 'missing' && !day.hold ? 'ma-text-warn' : ''}>{mealHeld(day, item.code) ? 'Chưa thể kết luận đối soát' : mealLabels[item.code]}</small></span></span>; })}</div>
+    {note && <p className="ma-history-note">{sentence(note)}</p>}
     {day.result.offDay && <p className="ma-history-note">Ngày nghỉ / ăn sự kiện: chỉ tra cứu lượt chấm, không tính vào suất tháng hoặc vi phạm.</p>}
     {day.result.unrecognized.length > 0 && <p className="ma-history-note">Ngoài khung giờ ăn: {day.result.unrecognized.join(', ')}{(day.result.unrecognizedCount || 0) > day.result.unrecognized.length ? ` và ${(day.result.unrecognizedCount || 0) - day.result.unrecognized.length} lượt khác` : ''}.</p>}
   </article>;
@@ -45,7 +51,8 @@ export function MealDayCard({ day }: { day: DayView }) {
 
 export default function App() {
   const setup = useMemo(() => { try { const account = createAccountLinkClient({ origin: import.meta.env.VITE_DKAN_API_ORIGIN, development: import.meta.env.DEV }); return { account, business: createMealBusinessClient(account), error: null }; } catch (error) { return { account: null, business: null, error: accountLinkMessage(error) }; } }, []);
-  const [tab, setTab] = useState<Tab>('home'), [modal, setModal] = useState<Modal>(null);
+  const [handoffCode, setHandoffCode] = useState(locationHandoffCode);
+  const [tab, setTab] = useState<Tab>('home'), [modal, setModal] = useState<Modal>(() => handoffCode ? 'link' : null);
   const [session, setSession] = useState<LinkedSession | null>(null), [data, setData] = useState<MealSnapshot | null>(null);
   const [selectedMonth, setSelectedMonth] = useState(() => todayInVietnam().slice(0, 7)), [selectedWeek, setSelectedWeek] = useState(() => weekStart(todayInVietnam()));
   const [selectedMenu, setSelectedMenu] = useState(''), [reloadVersion, setReloadVersion] = useState(0), [loading, setLoading] = useState(false), [saving, setSaving] = useState(false);
@@ -55,7 +62,51 @@ export default function App() {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const contentRef = useRef<HTMLElement>(null), dialogRef = useRef<HTMLDialogElement>(null), previousFocus = useRef<HTMLElement | null>(null);
   const sessionRef = useRef(session), generation = useRef(0), mutation = useRef<AbortController | null>(null);
+  const lastHandoffCode = useRef(handoffCode);
   sessionRef.current = session;
+  function consumeHandoff(code: string) {
+    setHandoffCode(previous => previous === code ? null : previous);
+    if (locationHandoffCode() !== code) return;
+    const url = new URL(window.location.href);
+    // Preserve the SDK's other query parameters and their original encoding.
+    url.search = url.search.slice(1).split('&').filter(part => !new URLSearchParams(part).has(ZALO_LINK_PARAM)).join('&');
+    try { window.history.replaceState(window.history.state, '', url); }
+    catch { /* Some host WebViews restrict changes to their history. */ }
+  }
+  useEffect(() => {
+    let stopped = false;
+    let unsubscribe: (() => void) | undefined;
+    const receiveHandoff = (code: string | null) => {
+      if (!code || code === lastHandoffCode.current) return;
+      lastHandoffCode.current = code;
+      if (sessionRef.current) { consumeHandoff(code); return; }
+      setHandoffCode(code);
+      setModal('link');
+    };
+    const receiveFromLocation = () => receiveHandoff(locationHandoffCode());
+    const onVisible = () => { if (document.visibilityState === 'visible') receiveFromLocation(); };
+    const receiveFromZalo = (data: { path?: unknown }) => {
+      if (typeof data?.path !== 'string') return;
+      try { receiveHandoff(readZaloHandoffCode(new URL(data.path, window.location.href).search)); }
+      catch { /* A malformed Mini App entry point has no handoff. */ }
+    };
+    window.addEventListener('popstate', receiveFromLocation);
+    document.addEventListener('visibilitychange', onVisible);
+    if (classifyZaloSdkEnvironment() === 'miniapp') {
+      // A resident Mini App receives the new entry point through OpenApp.
+      void import('zmp-sdk').then(({ events, EventName }) => {
+        if (stopped) return;
+        events.on(EventName.OpenApp, receiveFromZalo);
+        unsubscribe = () => { events.off(EventName.OpenApp, receiveFromZalo); };
+      }).catch(() => { /* URL and manual linking remain available. */ });
+    }
+    return () => {
+      stopped = true;
+      unsubscribe?.();
+      window.removeEventListener('popstate', receiveFromLocation);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
   const active = (ticket: number, token: string) => generation.current === ticket && sessionRef.current?.sessionToken === token && sessionRef.current.expiresAt > Date.now();
   function changeSession(next: LinkedSession | null) {
     if (sessionRef.current?.sessionToken !== next?.sessionToken) {
@@ -131,12 +182,24 @@ export default function App() {
     <main className="ma-main" tabIndex={-1} ref={contentRef}>
       {(saveError || error || setup.error) && <div className="ma-live-error" role="alert"><strong>Chưa hoàn tất yêu cầu</strong><p>{saveError || error || setup.error}</p>{session && <button className="ma-link-secondary" disabled={loading || saving} onClick={() => { setSaveError(null); setReloadVersion(value => value + 1); }}>Tải lại dữ liệu</button>}</div>}
       {notice && <div className="ma-notice" role="status"><Icon name="check" size={19} /><span>{notice}</span><button aria-label="Đóng thông báo" onClick={() => setNotice(null)}><Icon name="close" size={18} /></button></div>}
-      {!session ? <><PageTitle eyebrow="NGÔI SAO HOÀNG MAI" title="Bữa ăn của bạn, ngay trên Zalo" description="Đăng ký suất ăn, xem thực đơn và theo dõi lượt chấm bằng tài khoản nhà trường đã liên kết." /><section className="ma-card ma-empty"><span className="ma-tile-icon ma-blue"><Icon name="shield" size={28} /></span><h2>Kết nối đúng tài khoản của bạn</h2><p>Kiểm tra tài khoản Zalo để mở dữ liệu cá nhân. Nếu chưa liên kết, Mini App sẽ hướng dẫn xác nhận qua Microsoft của trường.</p><button className="ma-primary" onClick={() => setModal('link')} disabled={!setup.account?.configured}>Kiểm tra tài khoản Zalo <Icon name="arrow" size={18} /></button></section></>
+      {!session ? <><PageTitle eyebrow="NGÔI SAO HOÀNG MAI" title="Bữa ăn của bạn, ngay trên Zalo" description="Đăng ký suất ăn, xem thực đơn và theo dõi lượt chấm bằng tài khoản nhà trường đã liên kết." /><section className="ma-card ma-empty"><span className="ma-tile-icon ma-blue"><Icon name="shield" size={28} /></span><h2>Kết nối đúng tài khoản của bạn</h2><p>Kiểm tra tài khoản Zalo để mở dữ liệu cá nhân. Nếu chưa liên kết, Mini App sẽ hướng dẫn xác nhận qua Microsoft của trường.</p><button className="ma-primary" onClick={() => setModal('link')} disabled={!setup.account?.configured}>{handoffCode ? 'Tiếp tục liên kết' : 'Kiểm tra tài khoản Zalo'} <Icon name="arrow" size={18} /></button></section></>
         : loading ? <section className="ma-card ma-empty" role="status"><span className="ma-spinner" /><h2>Đang tải dữ liệu nhà trường…</h2><p>Vui lòng chờ trong giây lát.</p></section>
           : data ? <>
             {tab === 'home' && <>
               <div className="ma-welcome"><p className="ma-eyebrow">{dateLabel(data.today).toUpperCase()}</p><h1>Xin chào,<br /><span>{profile?.fullName}</span></h1><p>{profile?.department || 'Không gian suất ăn cá nhân của Thầy/Cô'}</p></div>
-              <section className="ma-today-card"><div className="ma-today-heading"><div><span className="ma-today-kicker">LỊCH ĂN CỦA BẠN</span><h2>Hôm nay ăn gì?</h2></div><span className="ma-plate"><Icon name="meal" size={30} /></span></div><div className="ma-today-meals">{(['breakfast', 'lunch'] as const).map(meal => <div key={meal}><span><Icon name={meal === 'breakfast' ? 'sun' : 'bowl'} size={18} />{meal === 'breakfast' ? 'Bữa sáng' : 'Bữa trưa'}</span><strong>{(meal === 'breakfast' ? todayMenu?.breakfast : todayMenu?.main) || 'Xem thực đơn tuần hiện tại'}</strong><small>{data.todayMeals ? data.todayMeals.hold ? 'Chưa thể kết luận đối soát' : `${mealLabels[data.todayMeals.result.meals[meal].code]}${data.todayMeals.result.meals[meal].time ? ` · ${data.todayMeals.result.meals[meal].time}` : ''}` : 'Chưa có dữ liệu lượt chấm'}</small></div>)}</div><button className="ma-today-link" onClick={() => { setSelectedWeek(weekStart(data.today)); navigate('menu'); }}>Xem đầy đủ thực đơn <Icon name="arrow" size={18} /></button></section>
+              <section className="ma-today-card">
+                <div className="ma-today-heading"><div><span className="ma-today-kicker">LỊCH ĂN CỦA BẠN</span><h2>Hôm nay ăn gì?</h2></div><span className="ma-plate"><Icon name="meal" size={30} /></span></div>
+                <div className="ma-today-meals">{(['breakfast', 'lunch'] as const).map(meal => {
+                  const item = data.todayMeals?.result.meals[meal];
+                  const held = !!data.todayMeals && !!item && mealHeld(data.todayMeals, item.code);
+                  return <div key={meal}>
+                    <span><Icon name={meal === 'breakfast' ? 'sun' : 'bowl'} size={18} />{meal === 'breakfast' ? 'Bữa sáng' : 'Bữa trưa'}</span>
+                    <strong>{(meal === 'breakfast' ? todayMenu?.breakfast : todayMenu?.main) || 'Xem thực đơn tuần hiện tại'}</strong>
+                    <small>{item ? held ? 'Chưa thể kết luận đối soát' : `${mealLabels[item.code]}${item.time ? ` · ${item.time}` : ''}` : 'Chưa có dữ liệu lượt chấm'}</small>
+                  </div>;
+                })}</div>
+                <button className="ma-today-link" onClick={() => { setSelectedWeek(weekStart(data.today)); navigate('menu'); }}>Xem đầy đủ thực đơn <Icon name="arrow" size={18} /></button>
+              </section>
               <div className="ma-section-heading"><h2>Thao tác nhanh</h2><button className="ma-text-button" onClick={() => setReloadVersion(value => value + 1)} disabled={saving}><Icon name="refresh" size={15} />Tải lại</button></div><div className="ma-shortcuts">
                 <button onClick={() => { setRegistrationMode('register'); navigate('register'); }}><span className="ma-tile-icon ma-blue"><Icon name="calendar" /></span><strong>Đăng ký ăn</strong><small>Theo tháng phục vụ</small></button><button onClick={() => { setRegistrationMode('cancel'); navigate('register'); }}><span className="ma-tile-icon ma-orange"><Icon name="clock" /></span><strong>Báo hủy ăn</strong><small>Chọn ngày, chọn bữa</small></button><button onClick={() => navigate('personal')}><span className="ma-tile-icon ma-purple"><Icon name="check" /></span><strong>Chấm ăn của tôi</strong><small>Tra cứu từng ngày</small></button><button onClick={() => setModal('event')}><span className="ma-tile-icon ma-pink"><Icon name="event" /></span><strong>Suất ăn sự kiện</strong><small>{data.events.length ? `${data.events.length} sự kiện` : 'Chưa có sự kiện'}</small></button>
               </div>
@@ -180,7 +243,7 @@ export default function App() {
     </main>
     <nav className="ma-bottom-nav" aria-label="Chức năng chính">{tabs.map(item => <button key={item.id} aria-current={tab === item.id ? 'page' : undefined} className={tab === item.id ? 'active' : ''} disabled={saving} onClick={() => navigate(item.id)}><span><Icon name={item.icon} size={22} /></span><strong>{item.name}</strong></button>)}</nav>
     {modal && <dialog ref={dialogRef} className="ma-dialog" aria-labelledby="ma-dialog-title" onCancel={event => { if (saving) event.preventDefault(); else dismissDialog(); }} onClick={event => { if (event.target === event.currentTarget) dismissDialog(); }}><div className="ma-dialog-content"><div className="ma-dialog-header"><span className="ma-tile-icon ma-blue"><Icon name={modal === 'link' ? 'shield' : modal === 'survey' ? 'star' : modal === 'event' ? 'event' : 'check'} /></span><button className="ma-icon-button" disabled={saving} aria-label="Đóng hộp thoại" onClick={dismissDialog}><Icon name="close" /></button></div>
-      {modal === 'link' && <AccountLinkPanel initialSession={session} onSessionChange={changeSession} />}
+      {modal === 'link' && <AccountLinkPanel initialSession={session} onSessionChange={changeSession} handoffCode={handoffCode} onHandoffConsumed={consumeHandoff} />}
       {modal === 'confirm' && pending && <><span className="ma-eyebrow">XÁC NHẬN THAO TÁC</span><h2 id="ma-dialog-title">{pending.kind === 'register' ? 'Đăng ký suất ăn tháng' : pending.kind === 'cancel' ? 'Báo hủy suất ăn' : pending.kind === 'event' ? 'Đăng ký suất ăn sự kiện' : 'Gửi phản hồi khảo sát'}</h2>
         <div className="ma-confirm-summary">{pending.kind === 'register' ? <><strong>{monthLabel(pending.month)}</strong><p>{pending.breakfast ? 'Bữa sáng + Bữa trưa' : 'Bữa trưa'}</p></> : pending.kind === 'cancel' ? <><strong>{dateLabel(pending.date)}</strong><p>{pending.meal === 'both' ? 'Cả hai bữa' : pending.meal === 'breakfast' ? 'Bữa sáng' : 'Bữa trưa'} · Bếp {pending.canteen === 'tieuhoc' ? 'Tiểu học' : 'Trung học'}</p><p>{pending.reason}</p></> : pending.kind === 'event' ? <><strong>{pending.name}</strong><p>{pending.choice === 'yes' ? 'Có tham gia ăn' : 'Không tham gia ăn'}</p></> : <><strong>Tuần bắt đầu {dateLabel(pending.weekId)}</strong><p>Gửi câu trả lời đến Nhóm Dinh dưỡng.</p></>}</div><p>Thông tin sẽ được lưu vào hệ thống nhà trường cho tài khoản <strong>{profile?.email}</strong>.</p><button className="ma-primary" disabled={saving} onClick={() => { void savePending(); }}>{saving ? 'Đang gửi, vui lòng chờ…' : 'Xác nhận và gửi'}</button><button className="ma-link-secondary" disabled={saving} onClick={dismissDialog}>Quay lại</button>
       </>}

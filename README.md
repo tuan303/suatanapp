@@ -19,6 +19,7 @@ Mã nguồn phần mềm đăng ký suất ăn của nhà trường, kèm bản 
 - Đã có mã xác minh danh tính Zalo phía server, liên kết với hồ sơ Microsoft của trường bằng mã một lần và xác nhận trên web, phiên API cá nhân và hủy liên kết.
 - Liên kết Microsoft/Zalo đã được kiểm tra thành công trên điện thoại. API công khai ở `https://suatanapp.vercel.app` chuyển tiếp tới máy chủ Việt Nam `api-suatan.nshm.vn`.
 - Bản `LIVE-20261103.1` đã có API dữ liệu thật cho đăng ký tháng, hủy ăn, sự kiện, thực đơn, chấm ăn cá nhân và khảo sát. Mã nghiệp vụ dùng chung dữ liệu với website; cần cập nhật API trên VPS và deploy lại Mini App để sử dụng bản này.
+- Bản `LIVE-20261116.2` hỗ trợ liên kết bằng nút mở trong Zalo hoặc quét QR từ website. [Hướng dẫn kiểm thử trên điện thoại](docs/ZALO_DEVICE_TEST.md)
 - Xem [hướng dẫn chuyển sang dữ liệu thật](docs/ZALO_LIVE_DATA.md). Việc kiểm thử ngoại tuyến và build thành công không thay thế kiểm tra trên Zalo sau khi triển khai.
 
 Đọc [hướng dẫn Mini App](miniapp/README.md) để cấu hình và chạy thử. Lần đầu người dùng xác minh tài khoản Microsoft của trường để liên kết đúng hồ sơ; các lần đăng nhập Mini App sau dùng danh tính Zalo đã liên kết.

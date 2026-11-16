@@ -1,5 +1,7 @@
 # Chuyển Mini App sang dữ liệu thật — LIVE-20261103.1
 
+Bản `LIVE-20261116.2` bỏ bước sao chép mã trong luồng chính. Bản này cần cập nhật Mini App Zalo và website Vercel. Triển khai bản Mini App đã kiểm thử trước, sau đó cập nhật website để người dùng thấy nút **Mở trong Zalo** và QR. API VPS, cấu hình xác thực và dữ liệu liên kết hiện tại dùng được với luồng mới. [Kiểm thử trên thiết bị](ZALO_DEVICE_TEST.md)
+
 Mini App `3378419117469948059`, ứng dụng cha `928403133949225802`. Website/API công khai `https://suatanapp.vercel.app`; API Việt Nam `https://api-suatan.nshm.vn/api/zalo`; Firebase chung với website: `dkan-4b061`.
 
 ## Những chức năng đã nối

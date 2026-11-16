@@ -1,6 +1,9 @@
 import { AccountLinkError, parseLinkedProfile, type AccountLinkClient, type LinkedProfile } from './accountLink';
 
-export type MealCode = 'off_day' | 'excluded' | 'not_registered' | 'extra' | 'invalid_id' | 'ok' | 'missing' | 'pending';
+// Meal states this build understands. A newer server may add states: an unknown
+// code becomes the neutral 'unknown' ("Chưa xác định") instead of rejecting the snapshot.
+const MEAL_CODES = ['off_day', 'excluded', 'not_registered', 'extra', 'invalid_id', 'ok', 'missing', 'pending', 'exempt'] as const;
+export type MealCode = typeof MEAL_CODES[number] | 'unknown';
 export type MealResult = { code: MealCode; time: string | null; reason?: string };
 export type DayResult = { date: string; offDay: boolean; meals: { breakfast: MealResult; lunch: MealResult }; unrecognized: string[]; unrecognizedCount?: number };
 export type DayView = { date: string; hold: string | null; result: DayResult };
@@ -41,9 +44,10 @@ const time = (v: unknown): string => typeof v === 'string' && /^([01]\d|2[0-3]):
 const dayView = (v: unknown): DayView => {
   const day = object(v), result = object(day.result), meals = object(result.meals);
   const meal = (v: unknown): MealResult => {
-    const item = object(v), code = text(item.code, 30);
-    if (!['off_day', 'excluded', 'not_registered', 'extra', 'invalid_id', 'ok', 'missing', 'pending'].includes(code)) invalid();
-    return { code: code as MealCode, time: item.time === null ? null : time(item.time), ...(item.reason === undefined ? {} : { reason: text(item.reason, 100) }) };
+    const item = object(v), raw = text(item.code, 30);
+    const code: MealCode = (MEAL_CODES as readonly string[]).includes(raw) ? raw as MealCode : 'unknown';
+    if (code === 'exempt' && item.time !== null) invalid();
+    return { code, time: item.time === null ? null : time(item.time), ...(item.reason === undefined ? {} : { reason: text(item.reason, 100) }) };
   };
   const resultDate = date(result.date), viewDate = date(day.date);
   if (resultDate !== viewDate) invalid();
@@ -120,5 +124,16 @@ export function createMealBusinessClient(account: AccountLinkClient) {
   };
 }
 
-export const mealLabels: Record<MealCode, string> = { off_day: 'Ngày nghỉ / ăn sự kiện', excluded: 'Không tính đối soát', not_registered: 'Không đăng ký', extra: 'Có chấm, chưa đăng ký', invalid_id: 'Cần kiểm tra mã NV', ok: 'Đã chấm ăn', missing: 'Chưa có lượt chấm', pending: 'Chưa chốt dữ liệu' };
+// Mã giữ ngày (conflict, guarded, expired hoặc mã mới mà bản này chưa biết): dữ liệu
+// cả ngày chưa đủ căn cứ, nên mọi bữa (trừ bữa được miễn) chưa kết luận. Giá trị khác
+// là câu giải thích ngắn của máy chủ, ví dụ thông tin miễn chấm đang được kiểm tra:
+// chỉ treo bữa còn chờ.
+const HOLD_CODE = /^[a-z_]+$/;
+/** Câu giải thích của máy chủ cho ngày bị giữ; null với ngày thường và các mã giữ ngày. */
+export const holdNote = (hold: string | null): string | null => hold && !HOLD_CODE.test(hold) ? hold : null;
+/** Bữa đang bị giữ, chưa thể kết luận đối soát. */
+export const mealHeld = (day: Pick<DayView, 'hold'>, code: MealCode): boolean =>
+  !!day.hold && code !== 'exempt' && (code === 'pending' || !holdNote(day.hold));
+
+export const mealLabels: Record<MealCode, string> = { off_day: 'Ngày nghỉ / ăn sự kiện', excluded: 'Không tính đối soát', not_registered: 'Không đăng ký', extra: 'Có chấm, chưa đăng ký', invalid_id: 'Cần kiểm tra mã NV', ok: 'Đã chấm ăn', missing: 'Chưa có lượt chấm', pending: 'Chưa chốt dữ liệu', exempt: 'Miễn chấm ăn', unknown: 'Chưa xác định' };
 export const businessReason = (reason: string | null) => ({ registration_closed: 'Đã hết hạn đăng ký hoặc điều chỉnh cho tháng này.', registration_blocked: 'Tài khoản đang bị hạn chế đăng ký.', already_registered: 'Đơn tháng này đã được ghi nhận. Liên hệ bộ phận phụ trách nếu cần điều chỉnh.', cancellation_closed: 'Đã hết thời gian báo hủy bữa này.', not_registered: 'Chưa đăng ký bữa ăn này.', already_cancelled: 'Bữa này đã được báo hủy.', event_closed: 'Đã hết hạn đăng ký sự kiện.', already_responded: 'Lựa chọn sự kiện đã được ghi nhận.', survey_closed: 'Khảo sát chưa mở hoặc đã hết hạn trả lời.', profile_incomplete: 'Hồ sơ chưa đủ thông tin để đăng ký. Vui lòng cập nhật trên website.' } as Record<string, string>)[reason || ''] || 'Chức năng hiện chưa mở. Vui lòng xem thông tin trên website hoặc liên hệ bộ phận phụ trách.';

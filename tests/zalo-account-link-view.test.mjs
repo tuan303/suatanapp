@@ -6,6 +6,7 @@ import { build } from 'esbuild';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
+import { readZaloHandoffCode, zaloHandoffUrl } from '../miniapp/shared/link-handoff.mjs';
 
 const require = createRequire(import.meta.url);
 let component;
@@ -25,7 +26,7 @@ test.before(async () => {
 
 const user = { email: 'demo@hoangmaistarschool.edu.vn', displayName: 'Tài khoản mẫu', providerData: [{ providerId: 'microsoft.com' }] };
 const challengeId = 'a'.repeat(64), now = Date.parse('2026-10-30T02:00:00Z');
-const challenge = { challengeId, code: 'SAMPLE_link_CODE_12345678', expiresAt: now + 300000, state: 'waiting' };
+const challenge = { challengeId, code: 'SAMPLE_link_CODE_1234567', expiresAt: now + 300000, state: 'waiting' };
 const defaults = () => ({ authLoading: false, user, link: { linked: false }, challenge: null, now, busy: null, error: null, notice: null, revokeConfirm: false,
   onReload() {}, onCreate() {}, onConfirm() {}, onCopy() {}, onRevokeRequest() {}, onRevokeCancel() {}, onRevoke() {} });
 const render = overrides => renderToStaticMarkup(createElement(MemoryRouter, null, createElement(component.ZaloAccountLinkView, { ...defaults(), ...overrides })));
@@ -34,7 +35,7 @@ test('chưa đăng nhập dẫn về Microsoft và giữ đúng trang cần quay
   const html = render({ user: null, link: null });
   assert.match(html, /href="\/login\?next=%2Flien-ket-zalo"/);
   assert.match(html, /Đăng nhập Microsoft/);
-  assert.doesNotMatch(html, /Xác minh Microsoft và tạo mã|Mã liên kết Zalo/);
+  assert.doesNotMatch(html, /Bắt đầu liên kết|Mã liên kết Zalo/);
 });
 
 test('chỉ cho tài khoản Microsoft nhà trường mở thao tác tạo mã', () => {
@@ -43,7 +44,7 @@ test('chỉ cho tài khoản Microsoft nhà trường mở thao tác tạo mã',
   assert.equal(component.isSchoolMicrosoftUser({ ...user, providerData: [{ providerId: 'google.com' }] }), false);
   const html = render({ user: { ...user, providerData: [] } });
   assert.match(html, /chưa xác thực qua Microsoft/);
-  assert.doesNotMatch(html, /Xác minh Microsoft và tạo mã/);
+  assert.doesNotMatch(html, /Bắt đầu liên kết/);
 });
 
 test('trạng thái chưa bật API thể hiện rõ, không hiển thị tạo mã hoặc thành công giả', () => {
@@ -52,7 +53,7 @@ test('trạng thái chưa bật API thể hiện rõ, không hiển thị tạo 
   const html = render({ link: null, error: message });
   assert.match(html, /Chức năng liên kết chưa được bật trên máy chủ/);
   assert.match(html, /Tải lại trạng thái/);
-  assert.doesNotMatch(html, /Xác minh Microsoft và tạo mã|Đã liên kết Zalo/);
+  assert.doesNotMatch(html, /Bắt đầu liên kết|Đã liên kết Zalo/);
 });
 
 test('lỗi dịch vụ không bị diễn giải thành cờ tính năng đang tắt', () => {
@@ -69,7 +70,7 @@ test('email chưa xác minh có bước gửi thư và kiểm tra lại, không 
   assert.match(html, /Xác minh email nhà trường/);
   assert.match(html, /Gửi thư xác minh email/);
   assert.match(html, /Tôi đã xác minh — kiểm tra lại/);
-  assert.doesNotMatch(html, /Xác minh Microsoft và tạo mã|Tải lại trạng thái|chưa được phép liên kết/);
+  assert.doesNotMatch(html, /Bắt đầu liên kết|Tải lại trạng thái|chưa được phép liên kết/);
   const pending = render({ link: null, emailVerificationRequired: true, verificationCooldown: true });
   assert.match(pending, /disabled=""[^>]*>Đã gửi thư — kiểm tra hộp thư/);
   assert.match(component.zaloLinkErrorMessage('email_verification_required', 403), /Email nhà trường cần được xác minh/);
@@ -113,31 +114,50 @@ test('gửi xác minh chỉ dùng tài khoản Microsoft hiện tại, không g�
   assert.equal(sent.length, 1);
 });
 
-test('chỉ hiển thị mã trong nội dung và sao chép, không đưa mã hoặc challenge vào URL', () => {
+test('yêu cầu đang chờ có QR và nút mở đúng Mini App, với mã thủ công dự phòng', () => {
   const html = render({ challenge });
-  assert.match(html, /SAMPLE_link_CODE_12345678/);
+  assert.match(html, /SAMPLE_link_CODE_1234567/);
   assert.match(html, /Còn 5 phút 00 giây/);
   assert.match(html, /Đang chờ yêu cầu từ Zalo Mini App/);
+  assert.match(html, /<canvas[^>]+aria-label="Mã QR để mở Mini App Suất ăn"/);
+  assert.match(html, /href="https:\/\/zalo\.me\/s\/3378419117469948059\/\?dkanLink=SAMPLE_link_CODE_1234567"[^>]+referrerPolicy="no-referrer"[^>]*>Mở trong Zalo/);
+  assert.match(html, /Dùng mã liên kết thủ công/);
   assert.doesNotMatch(html, /Xác nhận liên kết tài khoản Zalo này/);
-  for (const link of html.matchAll(/href="([^"]+)"/g)) {
-    assert.ok(!link[1].includes(challenge.code));
-    assert.ok(!link[1].includes(challengeId));
-  }
+  assert.doesNotMatch(html, new RegExp(challengeId));
+});
+
+test('website and Mini App exchange only one validated opaque handoff parameter', () => {
+  const code = challenge.code;
+  const url = new URL(zaloHandoffUrl(code));
+  assert.equal(url.origin, 'https://zalo.me');
+  assert.equal(url.pathname, '/s/3378419117469948059/');
+  assert.deepEqual([...url.searchParams], [['dkanLink', code]]);
+  assert.equal(readZaloHandoffCode(url.search), code);
+  const invalid = [undefined, '', 'https://example.invalid', challengeId, 'short', 'abcdefghijklmnopqrstuvw!'];
+  for (const value of invalid) assert.equal(zaloHandoffUrl(value), null);
+  assert.equal(readZaloHandoffCode('?dkanLink=short'), null);
+  assert.equal(readZaloHandoffCode(`?dkanLink=${code}&dkanLink=${code}`), null);
+});
+
+test('only a stale Microsoft session asks for a new verification', () => {
+  assert.match(render(), /Bắt đầu liên kết/);
+  assert.match(render({ recentAuthRequired: true }), /Xác minh Microsoft để tiếp tục/);
+  assert.match(render({ recentAuthRequired: true, challenge: { ...challenge, state: 'pending' } }), /Xác minh Microsoft và xác nhận/);
 });
 
 test('Zalo đã nhận mã vẫn cần xác nhận rõ ràng trên web và chỉ hiển thị đuôi định danh', () => {
   const html = render({ challenge: { ...challenge, state: 'pending', zaloUserIdSuffix: '1234' } });
   assert.match(html, /••••1234/);
-  assert.match(html, /Chỉ xác nhận khi Thầy\/Cô vừa nhập mã trên điện thoại/);
+  assert.match(html, /Chỉ xác nhận nếu Thầy\/Cô vừa gửi yêu cầu trong Mini App/);
   assert.match(html, /<button[^>]+>Xác nhận liên kết tài khoản Zalo này<\/button>/);
-  assert.doesNotMatch(html, /Đã liên kết Zalo/);
+  assert.doesNotMatch(html, /Đã liên kết Zalo|dkanLink=|<canvas|Sao chép mã/);
 });
 
 test('mã hết hạn không còn sao chép/xác nhận và yêu cầu xác minh Microsoft để tạo lại', () => {
   const html = render({ challenge: { ...challenge, state: 'pending', expiresAt: now - 1, zaloUserIdSuffix: '1234' } });
   assert.match(html, /Mã liên kết đã hết hạn/);
-  assert.match(html, /Xác minh Microsoft và tạo mã mới/);
-  assert.doesNotMatch(html, /Sao chép mã|Xác nhận liên kết tài khoản Zalo này|SAMPLE_link_CODE_12345678/);
+  assert.match(html, /Tạo yêu cầu mới/);
+  assert.doesNotMatch(html, /Sao chép mã|Xác nhận liên kết tài khoản Zalo này|SAMPLE_link_CODE_1234567|dkanLink=|<canvas/);
 });
 
 test('hủy liên kết có bước xác nhận riêng và trạng thái bận khóa thao tác', () => {
@@ -146,7 +166,7 @@ test('hủy liên kết có bước xác nhận riêng và trạng thái bận k
   assert.match(html, /Đang xác minh và hủy/);
   assert.match(html, /Giữ liên kết/);
   assert.match(html, /disabled=""/);
-  assert.doesNotMatch(html, /Xác minh Microsoft và tạo mã/);
+  assert.doesNotMatch(html, /Bắt đầu liên kết/);
 });
 
 test('API chỉ nhận action/challengeId và token qua header; không đưa UID/email vào body hay URL', async () => {

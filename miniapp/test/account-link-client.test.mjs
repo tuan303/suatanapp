@@ -143,6 +143,15 @@ test('claim sends only the entered code, without fake account identifiers or pro
   assert.deepEqual(await api.claim(privateToken, '  AbCD-1234  '), { claimToken: privateToken, expiresAt: expiry });
 });
 
+test('claim status remains authoritative when the phone clock is ahead', async () => {
+  const api = client(async (_url, options) => response(JSON.parse(options.body).action === 'mini.claim'
+    ? { claimToken: privateToken, expiresAt: expiry }
+    : { state: 'approved', expiresAt: expiry }), { now: () => expiry + 60_000 });
+  const claim = await api.claim(privateToken, 'AbCD-1234');
+  assert.deepEqual(claim, { claimToken: privateToken, expiresAt: expiry });
+  assert.deepEqual(await api.claimStatus(claim.claimToken), { state: 'approved', expiresAt: expiry });
+});
+
 test('invalid claim codes fail before any request', async () => {
   let calls = 0;
   const api = client(async () => { calls++; return response({}); });

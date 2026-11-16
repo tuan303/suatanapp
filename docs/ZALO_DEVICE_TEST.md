@@ -29,10 +29,10 @@ Việc tạo bản Testing và kiểm thử thiết bị là bước khác với
 ## Kiểm tra một tài khoản
 
 1. Trong Mini App, mở phần **Liên kết tài khoản** rồi bấm **Kiểm tra tài khoản Zalo**.
-2. Nếu chưa liên kết, trên website `https://suatanapp.vercel.app/lien-ket-zalo`, chọn **Xác minh Microsoft và tạo mã**.
-3. Sao chép mã một lần vào Mini App. Mã phân biệt chữ hoa/thường và có thời hạn ngắn (5 phút).
-4. Quay lại website, đối chiếu yêu cầu và chủ động bấm xác nhận đúng tài khoản Zalo của mình.
-5. Trở lại Mini App; chỉ khi API xác minh thành công mới xuất hiện hồ sơ CBNV thật trong hộp liên kết. Không gửi mã liên kết, token hoặc khóa qua chat.
+2. Trên website Suất ăn, chọn **Bắt đầu liên kết** và mở Mini App bằng nút **Mở trong Zalo** hoặc QR. Nếu dùng phiên bản cũ, mở mục mã thủ công.
+3. Trong Mini App, bấm **Tiếp tục liên kết**.
+4. Quay lại tab website, đối chiếu yêu cầu và bấm **Xác nhận liên kết tài khoản Zalo này** trong vòng 5 phút.
+5. Trở lại Mini App để kiểm tra hồ sơ CBNV.
 6. Đóng/mở lại phần liên kết và kiểm tra đăng nhập bằng Zalo nhận đúng hồ sơ đã gắn. Có thể kiểm tra hủy liên kết trên web với tài khoản thử nghiệm được chủ tài khoản cho phép.
 
 ### Website yêu cầu xác minh email nhà trường
@@ -49,7 +49,14 @@ Bản liên kết cũ `LK-20261030.2` vẫn dùng dữ liệu minh họa ngoài 
 
 Bản `LK-20261030.2` hiển thị mã hỗ trợ đã lọc bên dưới lỗi: bước tải SDK/lấy phiên, loại môi trường và mã lỗi số do SDK cấp nếu có. Không hiển thị access token, nội dung lỗi thô hoặc dữ liệu tài khoản.
 
-Sau khi mã nguồn được cập nhật, bấm **Deploy → Development → Deploy** lại trong Extension, đóng Mini App cũ trên điện thoại và quét QR từ kết quả deploy mới. Kiểm tra dòng `Phiên bản liên kết: LK-20261030.2` trong hộp liên kết để xác nhận đã nhận bản mới. Deploy web/API trên Vercel không tự cập nhật bản đã tải lên Zalo.
+Sau khi mã nguồn được cập nhật, bấm **Deploy → Development → Deploy** lại trong Extension, đóng Mini App cũ trên điện thoại và quét QR từ kết quả deploy mới. Kiểm tra dòng `Phiên bản: LIVE-20261116.2` trong hộp liên kết để xác nhận đã nhận bản mới. Deploy web/API trên Vercel không tự cập nhật bản đã tải lên Zalo.
+
+### Kiểm thử luồng liên kết trực tiếp
+
+1. Trên website, đăng nhập Microsoft bằng tài khoản thử nghiệm chưa liên kết và chọn **Bắt đầu liên kết**. Nếu máy chủ yêu cầu xác minh lại phiên Microsoft, hoàn tất xác minh.
+2. Trên điện thoại chọn **Mở trong Zalo**. Trên máy tính dùng Zalo trên điện thoại quét QR. Liên kết công khai của website mở bản Live. Khi kiểm thử trước phát hành, dùng deep link từ Extension cho đúng bản Testing, giữ tham số phiên bản và thêm tham số `dkanLink` với mã dùng một lần lấy từ mục thủ công.
+3. Kiểm tra Mini App hiển thị **Tiếp tục liên kết**, gửi yêu cầu, rồi quay lại đúng tab website bấm **Xác nhận liên kết tài khoản Zalo này** trong 5 phút.
+4. Mở lại Mini App để kiểm tra hồ sơ. Thử Android và iOS, với Mini App đã mở sẵn và khi mở lần đầu. Kiểm tra mã thủ công trên cả hai thiết bị nếu liên kết trực tiếp không chuyển được ứng dụng.
 
 Nếu còn lỗi, gửi phần **Mã hỗ trợ** và phiên bản liên kết để đối chiếu. SDK `-1401` có nhiều nguyên nhân về xác thực nên chưa đủ để kết luận sai App Secret; các lỗi `-1403` (quyền API), `-1404` (phiên bản Zalo), `-1408` (quá thời gian chờ) cần xử lý theo mã thực tế. Không tự xin thêm quyền tên/ảnh/số điện thoại để khắc phục lỗi lấy ID: `getAccessToken` từ SDK 2.35 đã hỗ trợ ID mặc định.
 
