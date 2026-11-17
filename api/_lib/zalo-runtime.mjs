@@ -1,18 +1,26 @@
 // SERVER ONLY. No credentials, Firebase admin token or role is sent to Mini App.
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { createAccountLinkService, AccountLinkError } from '../../miniapp/server/account-links.mjs';
 import { verifyZaloIdentity, ZaloIdentityError } from '../../miniapp/server/verify-zalo-identity.mjs';
 import { createMealBusinessService } from '../../miniapp/server/meal-business.mjs';
 import { MEAL_ACTION_FIELDS } from '../../miniapp/shared/meal-contract.mjs';
+import { readZaloMailConfig, inspectZaloMailEnv, createZaloMailer, reportZaloMailFailure } from './zalo-mail.mjs';
 
 const PROJECT = 'dkan-4b061';
 const SCHOOL_EMAIL = /^[A-Za-z0-9][A-Za-z0-9._%+-]{0,63}@hoangmaistarschool\.edu\.vn$/i;
 const UID = /^(?!__.*__$)[A-Za-z0-9_-]{1,128}$/;
 const NUMERIC_ID = /^[1-9][0-9]{0,39}$/;
 const PRIVATE_COLLECTIONS = new Set(['zalo_link_challenges', 'zalo_link_claims', 'zalo_link_sessions',
-  'zalo_links', 'zalo_link_owners', 'zalo_link_rate_limits']);
+  'zalo_links', 'zalo_link_owners', 'zalo_link_rate_limits', 'zalo_link_otps', 'zalo_link_otp_limits']);
+// OTP code hashes and send counters belong to the link service alone. Business
+// transactions only need the session/link/owner guards, so they cannot read them.
+const LINK_ONLY_COLLECTIONS = new Set(['zalo_link_otps', 'zalo_link_otp_limits']);
+// Versioned label: changing it (or ZALO_APP_SECRET_KEY) invalidates every
+// pending code at once, which is the intended way to rotate the OTP key.
+const OTP_SECRET_LABEL = 'dkan-zalo-email-otp-v1';
 const unavailable = () => { throw new AccountLinkError(503, 'service_unavailable'); };
 const accountUnavailable = () => { throw new AccountLinkError(403, 'account_unavailable'); };
+const accountNotFound = () => { throw new AccountLinkError(404, 'account_not_found'); };
 const safeText = (value, limit) => typeof value === 'string'
   ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, limit) : '';
 
@@ -115,7 +123,8 @@ export function createFirestoreMealStore(db, uid) {
     const parts = typeof path === 'string' ? path.split('/') : [];
     if (parts.length === 2) {
       const [collection, key] = parts;
-      if (!writing && PRIVATE_COLLECTIONS.has(collection) && /^[A-Za-z0-9_-]{1,220}$/.test(key)) return true;
+      if (!writing && PRIVATE_COLLECTIONS.has(collection) && !LINK_ONLY_COLLECTIONS.has(collection)
+        && /^[A-Za-z0-9_-]{1,220}$/.test(key)) return true;
       if (!writing && collection === 'settings' && settings.has(key)) return true;
       if (!writing && collection === 'blocked_users' && month.test(key)) return true;
       if (!writing && collection === 'weekly_menus' && date.test(key)) return true;
@@ -147,6 +156,85 @@ export function createFirestoreMealStore(db, uid) {
   } };
 }
 
+/** No new secret env: a labelled HMAC of the Zalo app secret, never the secret itself. */
+export function deriveZaloOtpSecret(appSecret) {
+  if (typeof appSecret !== 'string' || appSecret.length < 16) return undefined;
+  return createHmac('sha256', appSecret).update(OTP_SECRET_LABEL).digest('hex');
+}
+
+/** Admin SDK lookups for the e-mail OTP link; every answer is rechecked here. */
+export function createSchoolAccountDirectory(auth, db) {
+  return {
+    async findSchoolAccountByEmail(email) {
+      if (typeof email !== 'string' || email.length > 254 || !SCHOOL_EMAIL.test(email)) accountUnavailable();
+      const normalized = email.toLowerCase();
+      let user;
+      try { user = await auth.getUserByEmail(normalized); }
+      catch (error) {
+        if (error?.code === 'auth/user-not-found') accountNotFound();
+        // Never forward Auth text; the service turns this into service_unavailable.
+        throw new Error('School account lookup failed.');
+      }
+      // Same record checks as every profile read: enabled, school domain and a
+      // Microsoft sign-in. emailVerified is NOT required: the code proves it.
+      validateSchoolRecord(user?.uid, user);
+      if (user.email.toLowerCase() !== normalized) accountUnavailable();
+      let staff = {};
+      // The name only personalises the e-mail greeting; it never blocks a code.
+      try { const snapshot = await db.collection('staff').doc(user.uid).get(); staff = snapshot.exists ? snapshot.data() : {}; }
+      catch { staff = {}; }
+      return { uid: user.uid, email: normalized, name: safeText(staff?.fullName, 160) || safeText(user.displayName, 160) };
+    },
+    // Called only after the mailbox code matched. Profile reads re-check
+    // emailVerified, so the proven mailbox must be recorded in Firebase Auth.
+    // An optional expected address refuses to verify an account whose e-mail
+    // was changed between sending and entering the code.
+    async markEmailVerified(uid, expectedEmail) {
+      if (typeof uid !== 'string' || !UID.test(uid)) accountUnavailable();
+      let user;
+      try { user = await auth.getUser(uid); }
+      catch (error) {
+        if (error?.code === 'auth/user-not-found') accountUnavailable();
+        throw new Error('School account lookup failed.');
+      }
+      validateSchoolRecord(uid, user);
+      if (expectedEmail !== undefined && (typeof expectedEmail !== 'string'
+        || user.email.toLowerCase() !== expectedEmail.toLowerCase())) accountUnavailable();
+      if (user.emailVerified === true) return;
+      try { await auth.updateUser(uid, { emailVerified: true }); }
+      catch { throw new Error('School account update failed.'); }
+    },
+  };
+}
+
+/**
+ * Optional e-mail OTP options for createAccountLinkService. Missing or invalid
+ * MS_GRAPH_* settings only omit sendLinkEmail, so the service answers the two
+ * OTP actions with email_link_unavailable; website linking, Zalo login and
+ * meal actions keep starting exactly as before. This never throws.
+ */
+export function createZaloEmailLinkOptions(input = {}) {
+  try {
+    const { env = {}, appSecret, auth, db, fetchImpl, report = console.warn } = input;
+    const options = { otpSecret: deriveZaloOtpSecret(appSecret), ...createSchoolAccountDirectory(auth, db) };
+    let mailer = null;
+    try {
+      const mail = readZaloMailConfig(env);
+      mailer = mail ? createZaloMailer(mail, fetchImpl ? { fetchImpl } : {}) : null;
+    } catch { mailer = null; }
+    if (!mailer) {
+      // Variable names only, once per service build, so IT can see why.
+      try { report(`DKAN_ZALO_MAIL_UNAVAILABLE ${JSON.stringify(inspectZaloMailEnv(env))}`); } catch { /* Logging is optional. */ }
+      return options;
+    }
+    options.sendLinkEmail = async message => {
+      try { await mailer.send(message); }
+      catch (error) { reportZaloMailFailure(error, report); throw error; }
+    };
+    return options;
+  } catch { return {}; }
+}
+
 export function createZaloBusinessDispatcher(links, db) {
   return { async run(action, body, bearer) {
     if (!Object.hasOwn(MEAL_ACTION_FIELDS, action)) return links.run(action, body, bearer);
@@ -160,8 +248,10 @@ let cachedFingerprint, cachedService;
 export async function getLiveZaloService(env = process.env) {
   const config = readZaloRuntimeConfig(env);
   const fingerprint = createHash('sha256').update(JSON.stringify(config)).digest('hex');
-  if (cachedFingerprint === fingerprint && cachedService) return cachedService;
-  cachedFingerprint = fingerprint;
+  // Mail settings change the service but not the Firebase app it opens.
+  const serviceKey = createHash('sha256').update(JSON.stringify({ fingerprint, mail: readZaloMailConfig(env) })).digest('hex');
+  if (cachedFingerprint === serviceKey && cachedService) return cachedService;
+  cachedFingerprint = serviceKey;
   cachedService = (async () => {
     const [{ initializeApp, getApps, cert }, { getAuth }, { getFirestore }] = await Promise.all([
       import('firebase-admin/app'), import('firebase-admin/auth'), import('firebase-admin/firestore'),
@@ -189,6 +279,7 @@ export async function getLiveZaloService(env = process.env) {
         const staff = snapshot.exists ? snapshot.data() : {};
         return sanitizeSchoolProfile(staff, user);
       },
+      ...createZaloEmailLinkOptions({ env, appSecret: config.appSecret, auth, db }),
     });
     return createZaloBusinessDispatcher(links, db);
   })().catch(() => { cachedService = null; unavailable(); });

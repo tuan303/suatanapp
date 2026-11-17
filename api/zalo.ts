@@ -8,6 +8,9 @@ const FIELDS: Record<string, readonly string[]> = {
   'web.createChallenge': [], 'web.challengeStatus': ['challengeId'], 'web.confirmLink': ['challengeId'],
   'web.getLink': [], 'web.revokeLink': [], 'mini.login': [], 'mini.claim': ['code'],
   'mini.claimStatus': [], 'mini.me': [], 'mini.logout': [],
+  // First link by school-mailbox code. The Zalo user always comes from the
+  // verified bearer token; the client sends only the address or the code.
+  'mini.requestOtp': ['email'], 'mini.verifyOtp': ['code'],
   ...MEAL_ACTION_FIELDS,
 };
 interface Request { method?: string; headers: Record<string, string | string[] | undefined>; body?: unknown; }

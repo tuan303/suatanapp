@@ -6,6 +6,8 @@ export type LinkedSession = { sessionToken: string; expiresAt: number; profile: 
 export type LoginResult = { linked: false } | ({ linked: true } & LinkedSession);
 export type ClaimResult = { claimToken: string; expiresAt: number };
 export type ClaimState = { state: 'pending' | 'approved' | 'expired'; expiresAt: number };
+export type OtpSent = { state: 'sent'; emailMasked: string; expiresAt: number; resendAt: number; replacesExisting: boolean };
+export type OtpRequestResult = { state: 'linked' } | OtpSent;
 export type ZaloSdkStage = 'sdk-load' | 'sdk-auth' | 'sdk-result';
 export type ZaloSdkEnvironment = 'miniapp' | 'development' | 'web' | 'unknown';
 export type ZaloSdkDiagnostic = { stage: ZaloSdkStage; environment: ZaloSdkEnvironment; sdkCode?: number };
@@ -14,14 +16,14 @@ const messages: Record<string, string> = {
   not_configured: 'Chưa cấu hình kết nối. Nhà trường cần hoàn tất cấu hình API trước khi liên kết.',
   service_unavailable: 'Máy chủ liên kết chưa xử lý được yêu cầu. Vui lòng thử lại hoặc liên hệ quản trị nhà trường.',
   invalid_origin: 'Địa chỉ API chưa hợp lệ. Vui lòng liên hệ quản trị nhà trường.',
-  zalo_required: 'Vui lòng mở Mini App trong Zalo và bấm kiểm tra tài khoản lại.',
+  zalo_required: 'Vui lòng mở Mini App trong Zalo và thử lại.',
   zalo_sdk_load_failed: 'Chưa tải được mô-đun xác thực Zalo. Kiểm tra mạng, đóng Mini App rồi mở lại bản thử nghiệm mới nhất.',
-  zalo_auth_failed: 'Chưa lấy được phiên đăng nhập Zalo. Vui lòng đóng Mini App rồi mở lại bản thử nghiệm và kiểm tra tài khoản lần nữa.',
+  zalo_auth_failed: 'Chưa lấy được phiên đăng nhập Zalo. Vui lòng đóng Mini App rồi mở lại bản thử nghiệm và thử lại.',
   zalo_token_missing: 'Zalo chưa trả về phiên đăng nhập hợp lệ. Vui lòng đóng Mini App rồi mở lại bản thử nghiệm và thử lại.',
-  zalo_permission_denied: 'Bạn chưa đồng ý yêu cầu xác thực Zalo. Có thể bấm kiểm tra lại và xác nhận nếu muốn liên kết tài khoản.',
+  zalo_permission_denied: 'Thầy/Cô chưa đồng ý yêu cầu xác thực Zalo. Có thể thử lại và chọn đồng ý nếu muốn liên kết tài khoản.',
   zalo_permission_required: 'Phiên Mini App chưa được phép thực hiện xác thực Zalo. Vui lòng liên hệ quản trị để kiểm tra quyền của ứng dụng.',
   zalo_sdk_unsupported: 'API xác thực chưa được hỗ trợ trong phiên này. Hãy kiểm tra phiên bản Zalo và mở lại đúng bản Mini App thử nghiệm.',
-  auth_required: 'Phiên xác thực đã hết hạn hoặc chưa hợp lệ. Vui lòng kiểm tra tài khoản Zalo lại.',
+  auth_required: 'Phiên xác thực đã hết hạn hoặc chưa hợp lệ. Vui lòng đăng nhập lại bằng Zalo.',
   recent_login_required: 'Vui lòng đăng nhập lại tài khoản Microsoft trên website trước khi tạo mã mới.',
   challenge_unavailable: 'Mã liên kết không còn sử dụng được. Hãy tạo mã mới trên website nhà trường.',
   link_conflict: 'Tài khoản đã có liên kết khác. Vui lòng kiểm tra trên website hoặc liên hệ quản trị.',
@@ -29,10 +31,15 @@ const messages: Record<string, string> = {
   expired: 'Yêu cầu liên kết đã hết hạn. Hãy tạo mã mới trên website nhà trường.',
   invalid_code: 'Vui lòng dán đúng mã liên kết được tạo trên website nhà trường.',
   invalid_response: 'Dữ liệu xác thực trả về chưa hợp lệ. Vui lòng thử lại hoặc liên hệ quản trị.',
-  link_not_confirmed: 'Chưa xác nhận được liên kết. Vui lòng kiểm tra tài khoản Zalo lại.',
+  link_not_confirmed: 'Chưa xác nhận được liên kết. Vui lòng đăng nhập lại bằng Zalo.',
   forbidden: 'Tài khoản chưa được phép sử dụng chức năng này.',
   account_unavailable: 'Tài khoản nhà trường chưa thể sử dụng. Vui lòng đăng nhập lại trên website hoặc liên hệ bộ phận CNTT.',
-  email_verification_required: 'Vui lòng mở trang liên kết trên website để xác minh email nhà trường, sau đó kiểm tra tài khoản Zalo lại.',
+  email_verification_required: 'Vui lòng mở trang liên kết trên website để xác minh email nhà trường, sau đó đăng nhập lại bằng Zalo.',
+  otp_invalid: 'Mã xác minh chưa đúng. Thầy/Cô kiểm tra lại mã trong thư.',
+  otp_expired: 'Mã xác minh đã hết hạn hoặc nhập sai quá nhiều lần. Vui lòng gửi mã mới.',
+  account_not_found: 'Chưa có tài khoản Suất ăn cho email này. Thầy/Cô đăng nhập website suất ăn của trường một lần bằng tài khoản Microsoft, rồi thử lại.',
+  email_link_unavailable: 'Liên kết bằng email chưa được bật trên máy chủ. Vui lòng liên hệ bộ phận CNTT.',
+  invalid_email: 'Email chưa đúng. Thầy/Cô nhập email nhà trường, ví dụ tenban@hoangmaistarschool.edu.vn.',
   invalid_request: 'Thông tin gửi chưa hợp lệ. Vui lòng kiểm tra lựa chọn và thử lại.',
   registration_closed: 'Đã hết hạn đăng ký hoặc điều chỉnh cho tháng này.',
   registration_blocked: 'Tài khoản đang bị hạn chế đăng ký. Vui lòng kiểm tra thông tin trên website hoặc liên hệ bộ phận phụ trách.',
@@ -136,6 +143,21 @@ export function resolveAccountApiOrigin(value: unknown, development = false): st
   return url.origin;
 }
 
+export const SCHOOL_EMAIL_DOMAIN = 'hoangmaistarschool.edu.vn';
+// Same pattern as miniapp/server/account-links.mjs; the server stays authoritative.
+const SCHOOL_EMAIL = /^[A-Za-z0-9][A-Za-z0-9._%+-]{0,63}@hoangmaistarschool\.edu\.vn$/i;
+// The server reveals only the first and last character of the local part.
+// Any other shape (e.g. a full address or provider text) is never displayed.
+const MASKED_EMAIL = /^[A-Za-z0-9]\*{3}[A-Za-z0-9._%+-]?@hoangmaistarschool\.edu\.vn$/i;
+
+/** Same rule as the server: "tenban" means tenban@<school domain>. Null when it cannot be a school address. */
+export function normalizeSchoolEmail(input: string): string | null {
+  if (typeof input !== 'string' || input.length > 254) return null;
+  let email = input.trim().toLowerCase();
+  if (!email.includes('@')) email = `${email}@${SCHOOL_EMAIL_DOMAIN}`;
+  return email.length <= 254 && SCHOOL_EMAIL.test(email) ? email : null;
+}
+
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const isToken = (value: unknown): value is string => typeof value === 'string' && value.length >= 1 && value.length <= 8192 && /^[\x21-\x7e]+$/.test(value);
 const validExpiry = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value)
@@ -184,6 +206,11 @@ export function createAccountLinkClient(options: ClientOptions = {}) {
     if (!validExpiry(value) || value <= now() || value > now() + 86400000) throw new AccountLinkError('invalid_response');
     return value;
   };
+
+  function linkedSession(data: Record<string, unknown>): LinkedSession & { linked: true } {
+    if (data.linked !== true || !isToken(data.sessionToken)) throw new AccountLinkError('invalid_response');
+    return { linked: true, sessionToken: data.sessionToken, expiresAt: freshExpiry(data.expiresAt), profile: parseLinkedProfile(data.profile) };
+  }
 
   async function post(action: string, token: string, fields: Record<string, unknown> = {}, signal?: AbortSignal) {
     const endpoint = `${requireOrigin()}/api/zalo`;
@@ -256,7 +283,9 @@ export function createAccountLinkClient(options: ClientOptions = {}) {
         return token;
       };
       try {
-        // The SDK is imported only after an explicit user action, never on load.
+        // The SDK is imported only when a token is needed: automatically on open
+        // inside Zalo (App.tsx silent sign-in) or after a user action. Outside
+        // Zalo nothing imports it on load.
         const interruption = new Promise<string>((_resolve, reject) => {
           abort = () => reject(new AccountLinkError('cancelled'));
           signal?.addEventListener('abort', abort, { once: true });
@@ -279,8 +308,25 @@ export function createAccountLinkClient(options: ClientOptions = {}) {
     async login(token: string, signal?: AbortSignal): Promise<LoginResult> {
       const data = await post('mini.login', token, {}, signal);
       if (data.linked === false) return { linked: false };
-      if (data.linked !== true || !isToken(data.sessionToken)) throw new AccountLinkError('invalid_response');
-      return { linked: true, sessionToken: data.sessionToken, expiresAt: freshExpiry(data.expiresAt), profile: parseLinkedProfile(data.profile) };
+      return linkedSession(data);
+    },
+    async requestOtp(token: string, email: string, signal?: AbortSignal): Promise<OtpRequestResult> {
+      const normalized = normalizeSchoolEmail(email);
+      if (!normalized) throw new AccountLinkError('invalid_email');
+      const data = await post('mini.requestOtp', token, { email: normalized }, signal);
+      // An existing link sends no mail; the caller continues with mini.login.
+      if (data.state === 'linked') return { state: 'linked' };
+      if (data.state !== 'sent' || typeof data.emailMasked !== 'string' || !MASKED_EMAIL.test(data.emailMasked)
+        || !validExpiry(data.expiresAt) || !validExpiry(data.resendAt) || data.resendAt > data.expiresAt
+        || typeof data.replacesExisting !== 'boolean') throw new AccountLinkError('invalid_response');
+      // Server clock values: the device only displays them. The server enforces expiry and cooldown.
+      return { state: 'sent', emailMasked: data.emailMasked, expiresAt: data.expiresAt, resendAt: data.resendAt, replacesExisting: data.replacesExisting };
+    },
+    async verifyOtp(token: string, rawCode: string, signal?: AbortSignal): Promise<LinkedSession & { linked: true }> {
+      const code = typeof rawCode === 'string' ? rawCode.trim() : '';
+      if (!/^\d{6}$/.test(code)) throw new AccountLinkError('otp_invalid');
+      // A correct code always links; any other success shape is not a session.
+      return linkedSession(await post('mini.verifyOtp', token, { code }, signal));
     },
     async claim(token: string, rawCode: string, signal?: AbortSignal): Promise<ClaimResult> {
       const code = rawCode.trim();

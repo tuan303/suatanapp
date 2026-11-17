@@ -10,6 +10,7 @@ const FIELDS = Object.freeze({
   'web.createChallenge': [], 'web.challengeStatus': ['challengeId'], 'web.confirmLink': ['challengeId'],
   'web.getLink': [], 'web.revokeLink': [], 'mini.login': [], 'mini.claim': ['code'],
   'mini.claimStatus': [], 'mini.me': [], 'mini.logout': [],
+  'mini.requestOtp': ['email'], 'mini.verifyOtp': ['code'],
   ...MEAL_ACTION_FIELDS,
 });
 const ERROR_CODES = Object.freeze({
@@ -21,6 +22,10 @@ const ERROR_CODES = Object.freeze({
   link_conflict: [409, 'link_conflict'], rate_limited: [429, 'rate_limited'],
   session_expired: [401, 'session_expired'], service_unavailable: [503, 'service_unavailable'],
   not_configured: [503, 'service_unavailable'],
+  // E-mail OTP link. The Mini App needs these distinct codes to say "wrong
+  // code" vs "send a new one" vs "no account" instead of a generic failure.
+  otp_invalid: [422, 'otp_invalid'], otp_expired: [410, 'otp_expired'],
+  account_not_found: [404, 'account_not_found'], email_link_unavailable: [503, 'email_link_unavailable'],
   ...Object.fromEntries(Object.entries(MEAL_ERROR_STATUS).map(([code, status]) => [code, [status, code]])),
 });
 const unavailable = () => new AccountLinkError(503, 'service_unavailable');

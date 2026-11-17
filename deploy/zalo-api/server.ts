@@ -1,5 +1,7 @@
 // API-only process for a trusted server with a Vietnam egress IP.
-// Keep this separate from server.ts: no mail, GAS, static files or Vite routes.
+// Keep this separate from server.ts: no mail endpoints, GAS, static files or
+// Vite routes. The Zalo RPC itself may send the two link notices (sign-in
+// code, "account linked") through Microsoft Graph when MS_GRAPH_* is set here.
 import express from 'express';
 import type { ErrorRequestHandler, RequestHandler } from 'express';
 import { createZaloHandler } from '../../api/zalo';

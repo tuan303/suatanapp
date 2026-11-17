@@ -94,6 +94,35 @@ test('business RPC forwarding preserves only exact contract fields and fixed pub
   }
 });
 
+test('e-mail OTP forwarding keeps only the typed address or code, the sent/linked results and exact OTP errors', async () => {
+  const profile = { fullName: 'Nhân viên mẫu', employeeId: '100001', department: 'CNTT', email: 'teacher@hoangmaistarschool.edu.vn' };
+  let calls = 0;
+  for (const [action, body, result] of [
+    ['mini.requestOtp', { email: 'teacher' }, { state: 'sent', emailMasked: 't***r@hoangmaistarschool.edu.vn',
+      expiresAt: 1_800_000_600_000, resendAt: 1_800_000_060_000, replacesExisting: true }],
+    ['mini.requestOtp', { email: 'teacher@hoangmaistarschool.edu.vn' }, { state: 'linked' }],
+    ['mini.verifyOtp', { code: '012345' }, { linked: true, sessionToken: 'TEST_ONLY_SESSION', expiresAt: 1234, profile }]]) {
+    const upstream = service(async (_url, options) => {
+      calls++; assert.deepEqual(JSON.parse(options.body), { action, ...body }); return json(result);
+    });
+    assert.deepEqual(await upstream.run(action, body, PRIVATE), result);
+  }
+  assert.equal(calls, 3);
+  const unused = service(async () => { calls++; return json({ state: 'linked' }); });
+  for (const [action, body] of [['mini.requestOtp', {}], ['mini.requestOtp', { email: 'teacher', code: '012345' }],
+    ['mini.requestOtp', { email: 'teacher', zaloUserId: '123456789' }], ['mini.verifyOtp', {}],
+    ['mini.verifyOtp', { code: '012345', uid: 'forged' }], ['mini.verifyOtp', { code: '012345', email: 'teacher' }]])
+    await assert.rejects(unused.run(action, body, PRIVATE), publicError());
+  assert.equal(calls, 3);
+  for (const [status, code, mismatched] of [[422, 'otp_invalid', 400], [410, 'otp_expired', 404],
+    [404, 'account_not_found', 403], [503, 'email_link_unavailable', 500]]) {
+    await assert.rejects(service(async () => json({ error: { code, message: PRIVATE } }, status))
+      .run('mini.verifyOtp', { code: '012345' }, PRIVATE), publicError(status, code));
+    await assert.rejects(service(async () => json({ error: { code, message: PRIVATE } }, mismatched))
+      .run('mini.requestOtp', { email: 'teacher' }, PRIVATE), publicError());
+  }
+});
+
 test('successful RPC objects preserve approval, session and personal-profile fields', async () => {
   for (const value of [{ linked: false }, { linked: true, sessionToken: 'TEST_ONLY_SESSION', expiresAt: 1234,
     profile: { fullName: 'Nhân viên mẫu', employeeId: '100001', department: 'CNTT', email: 'test@example.com' } },

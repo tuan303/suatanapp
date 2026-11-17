@@ -3,4 +3,5 @@
 // LIVE-20261116.1: use server claim status and preserve post-confirmation login errors.
 // LIVE-20261116.2: transfer the link request from the website into Zalo.
 // LIVE-20261116.3: open the verification website and expose a browser fallback.
-export const ACCOUNT_LINK_BUILD = 'LIVE-20261116.3';
+// LIVE-20261117.1: link by a code sent to the school email; silent sign-in inside Zalo.
+export const ACCOUNT_LINK_BUILD = 'LIVE-20261117.1';

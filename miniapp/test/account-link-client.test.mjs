@@ -12,7 +12,7 @@ const compiled = await build({
 });
 const module = { exports: {} };
 new Function('require', 'module', 'exports', compiled.outputFiles[0].text)(require, module, module.exports);
-const { createAccountLinkClient, resolveAccountApiOrigin, AccountLinkError, accountLinkMessage, classifyZaloSdkEnvironment } = module.exports;
+const { createAccountLinkClient, resolveAccountApiOrigin, AccountLinkError, accountLinkMessage, classifyZaloSdkEnvironment, normalizeSchoolEmail } = module.exports;
 const privateToken = 'TEST_ONLY_private_token_12345';
 const privateProviderError = 'TEST_ONLY_provider_error_must_not_appear';
 const origin = 'https://dkan.nshm.vn';
@@ -362,4 +362,134 @@ test('a late SDK import cannot invoke getAccessToken after timeout', async () =>
   releaseImport({ getAccessToken: async () => { nativeCalls++; return privateToken; } });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(nativeCalls, 0);
+});
+
+// Email OTP linking. Sample addresses only; no mail is sent and no real code exists.
+const sampleEmail = 'mau.thu-nghiem@hoangmaistarschool.edu.vn';
+const sent = { state: 'sent', emailMasked: 'm***m@hoangmaistarschool.edu.vn', expiresAt: now + 600_000, resendAt: now + 60_000, replacesExisting: false };
+
+test('school email normalization follows the server rule and rejects anything else', () => {
+  for (const [input, expected] of [
+    ['tuantm', 'tuantm@hoangmaistarschool.edu.vn'],
+    ['  TuanTM  ', 'tuantm@hoangmaistarschool.edu.vn'],
+    [' Mau.Thu-Nghiem@HoangMaiStarSchool.EDU.vn ', sampleEmail],
+    ['a1%b+c', 'a1%b+c@hoangmaistarschool.edu.vn'],
+    ['tuan_tm', 'tuan_tm@hoangmaistarschool.edu.vn'],
+    ['9', '9@hoangmaistarschool.edu.vn'],
+    ['a'.repeat(64), `${'a'.repeat(64)}@hoangmaistarschool.edu.vn`],
+  ]) assert.equal(normalizeSchoolEmail(input), expected, input);
+  for (const input of ['', '   ', '@hoangmaistarschool.edu.vn', 'tuantm@', 'tuantm@gmail.com', 'tuantm@hoangmaistarschool.edu.vn.evil.test',
+    'tuantm@sub.hoangmaistarschool.edu.vn', 'tuantm@hoangmaistarschool-edu.vn', 'tuan tm', 'tu\nantm', '.tuantm', '-tuantm', '_tuantm', 'tuan#tm',
+    'tuấn', 'a@b@hoangmaistarschool.edu.vn', 'a'.repeat(65), `${' '.repeat(250)}tuantm`, 'x'.repeat(255),
+    123, null, undefined, {}, ['tuantm']]) {
+    assert.equal(normalizeSchoolEmail(input), null, String(input));
+  }
+});
+
+test('requestOtp sends only the normalized email and returns the validated sent state', async () => {
+  let calls = 0;
+  const api = client(async (url, options) => {
+    calls++;
+    assert.equal(url, `${origin}/api/zalo`);
+    assert.equal(options.headers.Authorization, `Bearer ${privateToken}`);
+    assert.equal(options.credentials, 'omit');
+    assert.equal(options.redirect, 'error');
+    assert.deepEqual(JSON.parse(options.body), { action: 'mini.requestOtp', email: sampleEmail });
+    // Extra server fields (or a leaked code) never reach the caller.
+    return response({ ...sent, replacesExisting: true, code: '123456', otpId: 'f'.repeat(32), uid: 'school-uid', email: sampleEmail });
+  });
+  assert.deepEqual(await api.requestOtp(privateToken, ' Mau.Thu-Nghiem '), { ...sent, replacesExisting: true });
+  assert.equal(calls, 1);
+});
+
+test('requestOtp for an already linked Zalo account returns only the linked state', async () => {
+  const api = client(async () => response({ state: 'linked', emailMasked: sent.emailMasked, sessionToken: 'must-not-be-used' }));
+  assert.deepEqual(await api.requestOtp(privateToken, 'tuantm'), { state: 'linked' });
+});
+
+test('an invalid email fails on the phone before any token use or request', async () => {
+  let calls = 0;
+  const api = client(async () => { calls++; return response(sent); });
+  for (const email of ['', 'tuantm@gmail.com', 'tuan tm', 'x'.repeat(255), null]) {
+    await assert.rejects(api.requestOtp(privateToken, email), safeFailure('invalid_email'));
+    await assert.rejects(api.requestOtp('', email), safeFailure('invalid_email'));
+  }
+  await assert.rejects(createAccountLinkClient({ origin: '' }).requestOtp(privateToken, 'tuantm@gmail.com'), safeFailure('invalid_email'));
+  await assert.rejects(createAccountLinkClient({ origin: '' }).requestOtp(privateToken, 'tuantm'), safeFailure('not_configured'));
+  assert.equal(calls, 0);
+  assert.match(new AccountLinkError('invalid_email').message, /hoangmaistarschool\.edu\.vn/);
+});
+
+test('requestOtp rejects malformed sent responses and never displays an unmasked address', async () => {
+  for (const data of [{}, { state: 'pending' }, { ...sent, state: 'Sent' }, { ...sent, emailMasked: sampleEmail },
+    { ...sent, emailMasked: 'm***m@gmail.com' }, { ...sent, emailMasked: `m***m@hoangmaistarschool.edu.vn ${privateProviderError}` },
+    { ...sent, emailMasked: '***@hoangmaistarschool.edu.vn' }, { ...sent, emailMasked: 'mau***m@hoangmaistarschool.edu.vn' },
+    { ...sent, emailMasked: 42 }, { ...sent, expiresAt: undefined }, { ...sent, expiresAt: 'soon' }, { ...sent, expiresAt: 0 },
+    { ...sent, resendAt: -1 }, { ...sent, resendAt: now + 1.5 }, { ...sent, resendAt: sent.expiresAt + 1 },
+    { ...sent, replacesExisting: 'false' }, { ...sent, replacesExisting: undefined }, null, []]) {
+    await assert.rejects(client(async () => response(data)).requestOtp(privateToken, 'tuantm'), safeFailure('invalid_response'));
+  }
+  // Short local parts are masked as first character + ***.
+  const short = { ...sent, emailMasked: 't***@hoangmaistarschool.edu.vn' };
+  assert.deepEqual(await client(async () => response(short)).requestOtp(privateToken, 'tm'), short);
+});
+
+test('requestOtp keeps server times when the phone clock is wrong; the server decides expiry', async () => {
+  for (const phoneNow of [now + 3_600_000, now - 3_600_000]) {
+    assert.deepEqual(await client(async () => response(sent), { now: () => phoneNow }).requestOtp(privateToken, 'tuantm'), sent);
+  }
+});
+
+test('verifyOtp sends only the six digits and accepts only a linked session', async () => {
+  const api = client(async (_url, options) => {
+    assert.deepEqual(JSON.parse(options.body), { action: 'mini.verifyOtp', code: '012345' });
+    return response({ linked: true, sessionToken: privateToken, expiresAt: expiry, profile, admin: true, uid: 'school-uid' });
+  });
+  assert.deepEqual(await api.verifyOtp(privateToken, ' 012345 '), { linked: true, sessionToken: privateToken, expiresAt: expiry, profile });
+  for (const data of [null, {}, { linked: false }, { linked: 'true', sessionToken: privateToken, expiresAt: expiry, profile },
+    { linked: true, sessionToken: '', expiresAt: expiry, profile }, { linked: true, sessionToken: privateToken, expiresAt: now, profile },
+    { linked: true, sessionToken: privateToken, expiresAt: expiry, profile: { ...profile, fullName: '' } }]) {
+    await assert.rejects(client(async () => response(data)).verifyOtp(privateToken, '123456'), safeFailure('invalid_response'));
+  }
+});
+
+test('malformed verification codes fail before any request', async () => {
+  let calls = 0;
+  const api = client(async () => { calls++; return response({}); });
+  for (const code of ['', '12345', '1234567', 'abcdef', '12 345', '12-345', '１２３４５６', '١٢٣٤٥٦', 123456, null, undefined]) {
+    await assert.rejects(api.verifyOtp(privateToken, code), safeFailure('otp_invalid'));
+  }
+  assert.equal(calls, 0);
+});
+
+test('OTP server errors map to fixed messages without provider text', async () => {
+  const expected = {
+    otp_invalid: 'Mã xác minh chưa đúng. Thầy/Cô kiểm tra lại mã trong thư.',
+    otp_expired: 'Mã xác minh đã hết hạn hoặc nhập sai quá nhiều lần. Vui lòng gửi mã mới.',
+    account_not_found: 'Chưa có tài khoản Suất ăn cho email này. Thầy/Cô đăng nhập website suất ăn của trường một lần bằng tài khoản Microsoft, rồi thử lại.',
+    email_link_unavailable: 'Liên kết bằng email chưa được bật trên máy chủ. Vui lòng liên hệ bộ phận CNTT.',
+  };
+  for (const [status, code, call] of [[422, 'otp_invalid', 'verify'], [410, 'otp_expired', 'verify'], [409, 'link_conflict', 'verify'],
+    [404, 'account_not_found', 'request'], [503, 'email_link_unavailable', 'request'], [503, 'email_link_unavailable', 'verify'],
+    [429, 'rate_limited', 'request'], [403, 'account_unavailable', 'request'], [400, 'invalid_request', 'request'],
+    [503, 'service_unavailable', 'request'], [401, 'auth_required', 'verify']]) {
+    const api = client(async () => response({ error: { code, message: `${privateToken} ${privateProviderError}` } }, status));
+    const pending = call === 'verify' ? api.verifyOtp(privateToken, '123456') : api.requestOtp(privateToken, 'tuantm');
+    await assert.rejects(pending, error => {
+      safeFailure(code)(error);
+      if (expected[code]) assert.equal(error.message, expected[code]);
+      return true;
+    });
+  }
+  // The Zalo verifier's own code is not a client code; the status decides.
+  await assert.rejects(client(async () => response({ error: { code: 'unauthenticated' } }, 401)).requestOtp(privateToken, 'tuantm'), safeFailure('auth_required'));
+  await assert.rejects(client(async () => response({ error: { code: 'otp_whatever' } }, 422)).verifyOtp(privateToken, '123456'), safeFailure('request_failed'));
+});
+
+test('every new OTP code has its own Vietnamese message addressed to Thầy/Cô where it asks for action', () => {
+  const codes = ['otp_invalid', 'otp_expired', 'account_not_found', 'email_link_unavailable', 'invalid_email'];
+  const texts = codes.map(code => { const error = new AccountLinkError(code); assert.equal(error.code, code); return error.message; });
+  assert.equal(new Set([...texts, new AccountLinkError('request_failed').message]).size, codes.length + 1);
+  for (const text of [texts[0], texts[2], texts[4]]) assert.match(text, /Thầy\/Cô/);
+  assert.doesNotMatch(texts.join(' '), /Kiểm tra tài khoản Zalo/i);
 });

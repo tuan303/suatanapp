@@ -8,6 +8,8 @@ import { readZaloHandoffCode, ZALO_LINK_PARAM } from '../shared/link-handoff.mjs
 
 type Tab = 'home' | 'register' | 'menu' | 'personal';
 type Modal = 'link' | 'survey' | 'event' | 'confirm' | null;
+// running: silent Zalo sign-in in progress; unlinked: Zalo has no link yet.
+type AutoSignIn = 'running' | 'unlinked' | 'failed' | 'idle';
 type Pending = { kind: 'register'; month: string; breakfast: boolean; lunch: boolean }
   | { kind: 'cancel'; date: string; meal: 'breakfast' | 'lunch' | 'both'; reason: string; canteen: 'tieuhoc' | 'trunghoc' }
   | { kind: 'event'; eventId: string; name: string; choice: 'yes' | 'no' }
@@ -52,6 +54,10 @@ export function MealDayCard({ day }: { day: DayView }) {
 export default function App() {
   const setup = useMemo(() => { try { const account = createAccountLinkClient({ origin: import.meta.env.VITE_DKAN_API_ORIGIN, development: import.meta.env.DEV }); return { account, business: createMealBusinessClient(account), error: null }; } catch (error) { return { account: null, business: null, error: accountLinkMessage(error) }; } }, []);
   const [handoffCode, setHandoffCode] = useState(locationHandoffCode);
+  const inZalo = useMemo(() => classifyZaloSdkEnvironment() === 'miniapp', []);
+  // A website handoff waits for its explicit "Tiếp tục liên kết" tap, as before.
+  const [autoSignIn, setAutoSignIn] = useState<AutoSignIn>(() => inZalo && setup.account?.configured && !handoffCode ? 'running' : 'idle');
+  const [autoNote, setAutoNote] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('home'), [modal, setModal] = useState<Modal>(() => handoffCode ? 'link' : null);
   const [session, setSession] = useState<LinkedSession | null>(null), [data, setData] = useState<MealSnapshot | null>(null);
   const [selectedMonth, setSelectedMonth] = useState(() => todayInVietnam().slice(0, 7)), [selectedWeek, setSelectedWeek] = useState(() => weekStart(todayInVietnam()));
@@ -62,9 +68,11 @@ export default function App() {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const contentRef = useRef<HTMLElement>(null), dialogRef = useRef<HTMLDialogElement>(null), previousFocus = useRef<HTMLElement | null>(null);
   const sessionRef = useRef(session), generation = useRef(0), mutation = useRef<AbortController | null>(null);
-  const lastHandoffCode = useRef(handoffCode);
-  sessionRef.current = session;
+  const lastHandoffCode = useRef(handoffCode), handoffRef = useRef(handoffCode);
+  const autoStart = useRef(autoSignIn === 'running'), signIn = useRef<AbortController | null>(null);
+  sessionRef.current = session; handoffRef.current = handoffCode;
   function consumeHandoff(code: string) {
+    if (handoffRef.current === code) handoffRef.current = null;
     setHandoffCode(previous => previous === code ? null : previous);
     if (locationHandoffCode() !== code) return;
     const url = new URL(window.location.href);
@@ -80,6 +88,7 @@ export default function App() {
       if (!code || code === lastHandoffCode.current) return;
       lastHandoffCode.current = code;
       if (sessionRef.current) { consumeHandoff(code); return; }
+      handoffRef.current = code;
       setHandoffCode(code);
       setModal('link');
     };
@@ -107,6 +116,37 @@ export default function App() {
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, []);
+  // Silent sign-in: only the Zalo identity is checked, no email or code is sent.
+  // A linked account opens its data with no tap; an unlinked one goes straight
+  // to the email step. Failures stay quiet on the home card, which offers a retry.
+  async function signInWithZalo() {
+    const account = setup.account;
+    if (!account?.configured || sessionRef.current) return;
+    signIn.current?.abort();
+    const controller = new AbortController(), ticket = generation.current; signIn.current = controller;
+    const current = () => !controller.signal.aborted && generation.current === ticket && !sessionRef.current;
+    setAutoSignIn('running'); setAutoNote(null);
+    try {
+      const result = await account.login(await account.getZaloToken(controller.signal), controller.signal);
+      if (!current()) return;
+      if (result.linked) {
+        const pendingHandoff = handoffRef.current;
+        if (pendingHandoff) consumeHandoff(pendingHandoff);
+        changeSession(result);
+      } else {
+        setAutoSignIn('unlinked');
+        if (!handoffRef.current) setModal(previous => previous || 'link');
+      }
+    } catch (caught) {
+      if (!current()) return;
+      setAutoSignIn('failed'); setAutoNote(accountLinkMessage(caught));
+    } finally { if (signIn.current === controller) signIn.current = null; }
+  }
+  useEffect(() => {
+    // Inside Zalo only; outside Zalo nothing imports the SDK on load.
+    if (autoStart.current) void signInWithZalo();
+    return () => { signIn.current?.abort(); };
+  }, []);
   const active = (ticket: number, token: string) => generation.current === ticket && sessionRef.current?.sessionToken === token && sessionRef.current.expiresAt > Date.now();
   function changeSession(next: LinkedSession | null) {
     if (sessionRef.current?.sessionToken !== next?.sessionToken) {
@@ -114,11 +154,19 @@ export default function App() {
       if (!next) setModal(previous => previous === 'link' ? 'link' : null);
       setSelectedMonth(todayInVietnam().slice(0, 7)); setSelectedWeek(weekStart(todayInVietnam()));
     }
+    // Any session (silent, email code or website) proves this Zalo is linked.
+    if (next) { setAutoSignIn('idle'); setAutoNote(null); }
     sessionRef.current = next; setSession(next);
   }
   useEffect(() => {
     if (!session) return;
-    const timer = setTimeout(() => { changeSession(null); setError('Phiên cá nhân đã hết hạn. Vui lòng kiểm tra tài khoản Zalo lại.'); }, Math.max(0, session.expiresAt - Date.now()));
+    // Inside Zalo an expired 8-hour session signs in again silently (the app
+    // often stays resident all day); a failure falls back to the retry card.
+    const timer = setTimeout(() => {
+      changeSession(null);
+      if (inZalo && setup.account?.configured && !handoffRef.current) void signInWithZalo();
+      else setError('Phiên cá nhân đã hết hạn. Vui lòng đăng nhập lại bằng Zalo.');
+    }, Math.max(0, session.expiresAt - Date.now()));
     return () => clearTimeout(timer);
   }, [session?.sessionToken, session?.expiresAt]);
   useEffect(() => {
@@ -174,15 +222,18 @@ export default function App() {
   const cancelDay = data?.cancellations.dates.find(day => day.date === cancelDate), survey = data?.survey;
   const canCancel = !!cancelDay && !cancelDay.existing && (cancelMeal === 'both' ? cancelDay.breakfast && cancelDay.lunch : cancelDay[cancelMeal]);
   const validAnswers = !!survey && survey.questions.every(q => q.kind === 'choice' ? q.options.some(option => option.value === answers[q.id]) : (!q.required || !!answers[q.id]?.trim()) && (answers[q.id]?.length || 0) <= q.maxLength);
+  const canRetrySignIn = inZalo && !!setup.account?.configured && !handoffCode && autoSignIn !== 'unlinked';
   const monthPicker = data && <label className="ma-field ma-month-select">Tháng theo dõi<select value={selectedMonth} disabled={saving || loading} onChange={event => { setNotice(null); setSelectedMonth(event.target.value); }}>{data.monthOptions.map(month => <option key={month} value={month}>{monthLabel(month)}</option>)}</select></label>;
 
   return <div className="ma-app">
     <header className="ma-header"><div className="ma-brand"><img className="ma-brand-logo" src={schoolLogo} alt="Trường Ngôi Sao Hoàng Mai" /><div><strong>Suất ăn</strong><span>Nhà trường</span></div></div><button className="ma-icon-button" aria-label="Tài khoản nhà trường" onClick={() => setModal('link')}><Icon name="person" /></button></header>
-    <div className="ma-live-banner"><span className="ma-demo-dot" /><span>{session ? 'Đã xác minh tài khoản nhà trường' : 'Kết nối tài khoản để sử dụng'}</span><span className="ma-zalo-label">MINI APP</span></div>
+    <div className="ma-live-banner"><span className="ma-demo-dot" /><span>{session ? 'Đã xác minh tài khoản nhà trường' : autoSignIn === 'running' ? 'Đang đăng nhập bằng Zalo…' : 'Kết nối tài khoản để sử dụng'}</span><span className="ma-zalo-label">MINI APP</span></div>
     <main className="ma-main" tabIndex={-1} ref={contentRef}>
       {(saveError || error || setup.error) && <div className="ma-live-error" role="alert"><strong>Chưa hoàn tất yêu cầu</strong><p>{saveError || error || setup.error}</p>{session && <button className="ma-link-secondary" disabled={loading || saving} onClick={() => { setSaveError(null); setReloadVersion(value => value + 1); }}>Tải lại dữ liệu</button>}</div>}
       {notice && <div className="ma-notice" role="status"><Icon name="check" size={19} /><span>{notice}</span><button aria-label="Đóng thông báo" onClick={() => setNotice(null)}><Icon name="close" size={18} /></button></div>}
-      {!session ? <><PageTitle eyebrow="NGÔI SAO HOÀNG MAI" title="Bữa ăn của bạn, ngay trên Zalo" description="Đăng ký suất ăn, xem thực đơn và theo dõi lượt chấm bằng tài khoản nhà trường đã liên kết." /><section className="ma-card ma-empty"><span className="ma-tile-icon ma-blue"><Icon name="shield" size={28} /></span><h2>Kết nối đúng tài khoản của bạn</h2><p>Kiểm tra tài khoản Zalo để mở dữ liệu cá nhân. Nếu chưa liên kết, Mini App sẽ hướng dẫn xác nhận qua Microsoft của trường.</p><button className="ma-primary" onClick={() => setModal('link')} disabled={!setup.account?.configured}>{handoffCode ? 'Tiếp tục liên kết' : 'Kiểm tra tài khoản Zalo'} <Icon name="arrow" size={18} /></button></section></>
+      {!session ? <><PageTitle eyebrow="NGÔI SAO HOÀNG MAI" title="Bữa ăn của bạn, ngay trên Zalo" description="Đăng ký suất ăn, xem thực đơn và theo dõi lượt chấm bằng tài khoản nhà trường đã liên kết." />{autoSignIn === 'running'
+          ? <section className="ma-card ma-empty" role="status"><span className="ma-spinner" /><h2>Đang đăng nhập bằng Zalo…</h2><p>Mini App đang mở tài khoản nhà trường đã liên kết với Zalo này.</p></section>
+          : <section className="ma-card ma-empty"><span className="ma-tile-icon ma-blue"><Icon name="shield" size={28} /></span><h2>Kết nối đúng tài khoản của bạn</h2><p>Lần đầu sử dụng, Thầy/Cô nhập email nhà trường và mã xác minh 6 số gửi qua thư. Các lần sau Mini App tự đăng nhập bằng Zalo.</p>{autoSignIn === 'failed' && autoNote && <p className="ma-auto-note" role="status">Chưa tự đăng nhập được. {autoNote}</p>}<button className="ma-primary" onClick={() => setModal('link')} disabled={!setup.account?.configured}>{handoffCode ? 'Tiếp tục liên kết' : 'Liên kết bằng email nhà trường'} <Icon name="arrow" size={18} /></button>{canRetrySignIn && <button className="ma-link-secondary" onClick={() => { void signInWithZalo(); }}>Đăng nhập lại bằng Zalo</button>}</section>}</>
         : loading ? <section className="ma-card ma-empty" role="status"><span className="ma-spinner" /><h2>Đang tải dữ liệu nhà trường…</h2><p>Vui lòng chờ trong giây lát.</p></section>
           : data ? <>
             {tab === 'home' && <>

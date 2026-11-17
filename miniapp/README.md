@@ -8,12 +8,15 @@ Zalo App ID cha đã được chủ dự án đính chính và xác nhận: **92
 
 Liên kết Microsoft/Zalo đã được kiểm tra thành công trên điện thoại. Bản `LIVE-20261103.1` chuyển các màn hình nghiệp vụ sang API dữ liệu thật, cùng Firebase `dkan-4b061` với website. Không hiển thị dữ liệu mẫu khi mất mạng hoặc API chưa cập nhật. Cần cập nhật cả API trên VPS và bản Mini App trong Zalo theo [hướng dẫn triển khai dữ liệu thật](../docs/ZALO_LIVE_DATA.md).
 
+Bản `LIVE-20261117.1` (đang chuẩn bị) rút gọn liên kết lần đầu còn **email → mã 6 số → xong**, ngay trong Mini App; Zalo đã liên kết tự đăng nhập khi mở. Cần cập nhật VPS, Vercel rồi Mini App theo mục *Cập nhật LIVE-20261117.1* của [hướng dẫn API Việt Nam](../docs/ZALO_VIETNAM_API.md).
+
 | Thành phần | Trạng thái |
 | --- | --- |
 | Bốn mục Trang chủ / Đăng ký / Thực đơn / Cá nhân | Đọc dữ liệu chính chủ từ API sau xác thực |
 | Đăng ký, hủy, sự kiện, khảo sát | Có xác nhận và API ghi thật, kiểm tra thời hạn bằng giờ máy chủ |
 | Xác minh access token Zalo phía server | Có hàm độc lập và kiểm thử giả lập |
-| Liên kết Microsoft ↔ Zalo, phiên API cá nhân | Đã kiểm tra bằng tài khoản thật; phiên chỉ giữ trong bộ nhớ |
+| Liên kết Microsoft ↔ Zalo qua website, phiên API cá nhân | Đã kiểm tra bằng tài khoản thật; phiên chỉ giữ trong bộ nhớ |
+| Liên kết bằng mã email, tự đăng nhập khi mở | Có mã và kiểm thử giả lập; cần chạy [danh sách kiểm thử trên thiết bị](../docs/ZALO_DEVICE_TEST.md) |
 | API nghiệp vụ đọc/ghi đăng ký, thực đơn, lịch sử | Đã triển khai mã và kiểm thử giả lập; cần cập nhật VPS/Mini App và đối chiếu dữ liệu sau triển khai |
 | Kiểm thử nghiệp vụ trên điện thoại | Thực hiện sau khi cập nhật hai thành phần |
 | Phát hành Zalo cho toàn trường | Thực hiện sau kiểm thử và quy trình duyệt của Zalo |
@@ -71,17 +74,17 @@ Web quản trị → Firestore hiện có ← Agent HAC
 
 Mini App dùng các API giới hạn theo chủ tài khoản. Backend tự xác định UID từ phiên đã xác minh, không nhận UID/email/mã nhân viên từ client làm bằng chứng quyền truy cập. Không phát token Firebase của UID quản trị cũ vào Mini App vì sẽ kế thừa quyền quản trị theo rules hiện tại.
 
-Luồng liên kết đã có mã nguồn, kiểm thử giả lập và API máy chủ; **chưa kiểm thử trên điện thoại hoặc được Zalo xét duyệt**:
+Luồng chính từ `LIVE-20261117.1` — liên kết bằng mã email, **chưa kiểm thử trên điện thoại hoặc được Zalo xét duyệt**:
 
-1. Người dùng đăng nhập Microsoft trên web trường; server xác minh Firebase ID token, tenant/email và trạng thái tài khoản.
-2. Server phát mã ngẫu nhiên một lần, TTL ngắn, lưu bản băm kèm UID và mục đích liên kết. Không dùng email hoặc mã nhân viên làm mã liên kết.
-3. Mini App gửi mã cùng Zalo access token về server. Server xác minh danh tính Zalo, tiêu thụ mã bằng transaction và lưu liên kết duy nhất.
-4. Server cấp phiên API chỉ phạm vi cá nhân. Mọi thao tác kiểm tra owner, hạn phục vụ, hủy, khóa trùng và idempotency bằng giờ server.
-5. Có luồng hủy liên kết/đổi Zalo được xác minh lại và thu hồi phiên; không tự chuyển quyền khi người khác nhập cùng tên/email.
+1. Khi mở trong Zalo, Mini App lấy access token và gọi `mini.login` một lần. Đã liên kết: vào thẳng dữ liệu. Chưa liên kết: mở hộp liên kết ở bước email. Lỗi mạng/máy chủ: giữ màn hình chính, người dùng thử lại được.
+2. `mini.requestOtp`: server xác minh Zalo, chuẩn hóa email (thiếu `@` thì thêm `@hoangmaistarschool.edu.vn`), tìm tài khoản Firebase Auth (chưa từng đăng nhập website thì báo `account_not_found`, không gửi thư) và kiểm tra còn hoạt động, đúng tên miền, từng đăng nhập Microsoft. Mã 6 số chỉ lưu bản băm HMAC, hạn 10 phút; gửi lại sau 60 giây, tối đa 5 thư/giờ và 10 thư/24 giờ cho mỗi Zalo và mỗi tài khoản. Giới hạn của Zalo được kiểm tra trước khi tra tài khoản, nên khi đang chờ thì mọi địa chỉ đều nhận cùng một `rate_limited`. Gửi lại đúng email đó trong 60 giây (mất câu trả lời, bấm hai lần) trả về mã đã gửi, không gửi thư mới. Mã đã dùng hoặc gửi lỗi bị hủy nhưng vẫn giữ lịch sử gửi để tính giới hạn.
+3. `mini.verifyOtp`: so mã bằng so sánh thời gian hằng, sai 5 lần là hủy mã; mỗi tài khoản chỉ được nhập sai tổng cộng 10 lần trong 24 giờ dù từ bao nhiêu Zalo, sau đó mọi mã của tài khoản bị từ chối và không gửi thêm mã. Người khác có thể dùng hết các giới hạn theo tài khoản; khi đó chủ tài khoản liên kết qua website (Mini App mở sẵn mục **Cách khác**). Mã đúng: đặt `emailVerified=true` (mã đã chứng minh quyền dùng hộp thư, như đường dẫn xác minh của Firebase), ghi cặp liên kết mới trong transaction, thay Zalo cũ nếu có và cấp phiên 8 giờ. Hộp thư nhận thư báo đã liên kết; server chờ thư này tối đa 2 giây rồi trả lời, thư lỗi không làm hỏng liên kết. Mất câu trả lời (mạng chậm, quá thời gian chờ) thì Mini App gọi lại `mini.login` một lần thay vì báo mã hết hạn.
+4. Server cấp phiên API chỉ phạm vi cá nhân. Mọi thao tác kiểm tra owner, hạn phục vụ, hủy, khóa trùng và idempotency bằng giờ server. Phiên của Zalo cũ tự hết hiệu lực vì phiên được đối chiếu với phiên bản liên kết hiện hành.
+5. Một Zalo đã gắn tài khoản thì `mini.requestOtp` trả `linked` và không gửi thư; muốn đổi tài khoản cho Zalo đó phải hủy liên kết trên website trước.
 
-`server/verify-zalo-identity.mjs` xác minh danh tính Zalo. `server/account-links.mjs` quản lý mã một lần, xác nhận web, phiên cá nhân 8 giờ và thu hồi liên kết. `api/zalo.ts` là RPC giới hạn thao tác; `api/_lib/zalo-runtime.mjs` xác minh Microsoft và kết nối Firebase Admin. Không import các module server vào mã client.
+Cách thay thế (từ `LIVE-20261116.2`, vẫn chạy): mở `/lien-ket-zalo`, đăng nhập Microsoft, chọn **Bắt đầu liên kết** rồi **Mở trong Zalo** hoặc quét QR. Mini App chỉ hiện **Tiếp tục liên kết** khi được mở từ liên kết đó; quay lại đúng tab website để xác nhận trong 5 phút. Trang vẫn có mã thủ công cho thiết bị không mở được liên kết trực tiếp, và là nơi hủy liên kết. [Kiểm thử trên thiết bị](../docs/ZALO_DEVICE_TEST.md)
 
-Từ bản `LIVE-20261116.2`, mở `/lien-ket-zalo`, chọn **Bắt đầu liên kết** rồi **Mở trong Zalo** hoặc quét QR nếu đang dùng máy tính. Bấm **Tiếp tục liên kết** trong Mini App, quay lại đúng tab website để xác nhận. Trang vẫn có cách nhập mã thủ công cho thiết bị không mở được liên kết trực tiếp. [Kiểm thử trên thiết bị](../docs/ZALO_DEVICE_TEST.md)
+`server/verify-zalo-identity.mjs` xác minh danh tính Zalo. `server/account-links.mjs` quản lý mã email, mã một lần của website, phiên cá nhân 8 giờ và thu hồi liên kết. `api/zalo.ts` là RPC giới hạn thao tác; `api/_lib/zalo-runtime.mjs` xác minh Microsoft và kết nối Firebase Admin; `api/_lib/zalo-mail.mjs` gửi thư mã qua Microsoft Graph. Không import các module server vào mã client.
 
 ## Cấu hình để thử liên kết thật
 
@@ -94,10 +97,13 @@ Giữ `DKAN_ZALO_ENABLED=false` trong lúc chuẩn bị. Cấu hình các biến
 | `ZALO_APP_SECRET_KEY` | App Secret do Zalo cấp cho app cha nói trên; khác khóa email `MEAL_ALERT_SECRET` |
 | `FIREBASE_ADMIN_CREDENTIALS_JSON` | JSON service account của project `dkan-4b061`, chỉ lưu ở server |
 | `DKAN_ZALO_ENABLED` | `true` khi đã chuẩn bị tài khoản thử nghiệm và sẵn sàng kiểm tra |
+| `MS_GRAPH_TENANT_ID`, `MS_GRAPH_CLIENT_ID`, `MS_GRAPH_CLIENT_SECRET`, `MS_GRAPH_SENDER` | Gửi thư mã xác minh; cùng app Entra gửi thư của trường (quyền Application `Mail.Send`), hộp thư gửi `@hoangmaistarschool.edu.vn`. Đặt trên máy chủ chạy API Zalo (VPS); thiếu thì chỉ liên kết bằng email báo `email_link_unavailable` |
 
-Ở Mini App đặt `VITE_DKAN_API_ORIGIN=https://suatanapp.vercel.app` trong `.env.local`. Đây là địa chỉ API đã triển khai; trang tạo mã/xác nhận liên kết là `https://suatanapp.vercel.app/lien-ket-zalo`. Client chỉ chấp nhận hai origin HTTPS cố định `https://suatanapp.vercel.app` và `https://dkan.nshm.vn`; không chấp nhận URL preview, đường dẫn phụ, query hoặc thông tin đăng nhập trong URL. Những tên biến `VITE_*` đều có thể nằm trong bundle công khai, vì vậy không đặt khóa bí mật ở đây. Build lại sau khi thay env. Việc cấu hình biến trên Vercel cần đi kèm triển khai lại server.
+Service account trong `FIREBASE_ADMIN_CREDENTIALS_JSON` phải đọc và cập nhật được người dùng Firebase Auth (đặt `emailVerified`). Khóa băm mã suy ra từ `ZALO_APP_SECRET_KEY`, không có biến bí mật riêng.
 
-Để thử đăng nhập Microsoft trên website mới, quản trị cần kiểm tra `suatanapp.vercel.app` trong Firebase Authentication → Settings → Authorized domains. Quyền trường, mã một lần, xác nhận trên web và thu hồi phiên vẫn được kiểm tra tại server.
+Ở Mini App đặt `VITE_DKAN_API_ORIGIN=https://suatanapp.vercel.app` trong `.env.local`. Đây là địa chỉ API đã triển khai; trang liên kết/hủy liên kết qua website là `https://suatanapp.vercel.app/lien-ket-zalo`. Client chỉ chấp nhận hai origin HTTPS cố định `https://suatanapp.vercel.app` và `https://dkan.nshm.vn`; không chấp nhận URL preview, đường dẫn phụ, query hoặc thông tin đăng nhập trong URL. Những tên biến `VITE_*` đều có thể nằm trong bundle công khai, vì vậy không đặt khóa bí mật ở đây. Build lại sau khi thay env. Việc cấu hình biến trên Vercel cần đi kèm triển khai lại server.
+
+Để thử đăng nhập Microsoft trên website mới, quản trị cần kiểm tra `suatanapp.vercel.app` trong Firebase Authentication → Settings → Authorized domains. Quyền trường, mã email, mã một lần, xác nhận trên web và thu hồi phiên vẫn được kiểm tra tại server.
 
 Mặc định API trả 503 khi chưa bật/thiếu cấu hình. Các collections `zalo_link_*`, `zalo_links` chỉ được truy cập bằng server; rules hiện tại không cho client đọc/ghi chúng. Phiên Mini App không phải Firebase token và không kế thừa vai trò quản trị.
 
@@ -126,8 +132,8 @@ Tài liệu tham chiếu đã kiểm tra ngày 30/10/2026:
 
 ## Kiểm chứng
 
-Kiểm thử tự động dùng dữ liệu và Zalo Graph giả lập; không gửi email, tạo đơn thử trên Firebase thật hoặc tự xác nhận liên kết. Luồng liên kết đã được chủ tài khoản kiểm tra trên thiết bị thật ngày 03/11/2026. Các nghiệp vụ mới cần đối chiếu lại sau khi triển khai.
+Kiểm thử tự động dùng dữ liệu, Zalo Graph và dịch vụ gửi thư giả lập; không gửi email, tạo đơn thử trên Firebase thật hoặc tự xác nhận liên kết. Luồng liên kết đã được chủ tài khoản kiểm tra trên thiết bị thật ngày 03/11/2026. Các nghiệp vụ mới cần đối chiếu lại sau khi triển khai.
 
 Chạy `npm test`, `npm run typecheck`, `npm run build` trong thư mục `miniapp`. Kiểm thử bao phủ phiên, quyền chính chủ, cấu trúc snapshot, giao dịch ghi, hạn theo giờ Việt Nam và quy tắc chấm ăn dùng chung. Giao diện chỉ báo đã lưu sau phản hồi thành công, xóa dữ liệu khi hết phiên và không thay API lỗi bằng dữ liệu mẫu.
 
-Bản `LIVE-20261116.3` mở trang xác minh qua WebView của Zalo và hiển thị nút **Sao chép địa chỉ** để có thể đăng nhập trong Chrome hoặc Safari.
+Bản `LIVE-20261116.3` mở trang xác minh qua WebView của Zalo và hiển thị nút **Sao chép địa chỉ** để có thể đăng nhập trong Chrome hoặc Safari. Từ `LIVE-20261117.1`, nút mở trang và nút **Sao chép địa chỉ** nằm trong mục **Cách khác: liên kết qua website** (dưới bước nhập email), cùng ô nhập mã liên kết của website.
