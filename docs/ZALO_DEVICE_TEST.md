@@ -91,7 +91,7 @@ Quản trị đối chiếu dòng `DKAN_ZALO_MAIL_UNAVAILABLE` / `DKAN_ZALO_MAIL
 4. Trong Mini App bấm **Tiếp tục liên kết**, quay lại đúng tab website bấm **Xác nhận liên kết tài khoản Zalo này** trong 5 phút.
 5. Mở lại Mini App: tự đăng nhập đúng hồ sơ. Thử với Mini App đã mở sẵn và khi mở lần đầu; dùng mã thủ công nếu liên kết trực tiếp không chuyển được ứng dụng.
 
-Từ Mini App, mở mục **Cách khác: liên kết qua website** ở bước nhập email. Nút **Mở website liên kết** tải trang trong cửa sổ Zalo (WebView, có từ bản `LIVE-20261116.3`). Nếu cửa sổ không mở hoặc đăng nhập Microsoft bị chặn, Mini App báo lỗi và vẫn hiện địa chỉ trang ngay bên dưới: bấm **Sao chép địa chỉ**, dán vào Chrome hoặc Safari rồi làm tiếp từ bước 1. Ô **Mã liên kết trên website** trong cùng mục dùng cho mã thủ công.
+Từ Mini App, mở mục **Cách khác: liên kết qua website** ở bước nhập email. Nút **Mở website liên kết** tải trang trong cửa sổ Zalo (WebView, có từ bản `LIVE-20261116.3`). Nếu cửa sổ Zalo không mở được, Mini App báo "Chưa mở được trang xác minh trong Zalo…" và vẫn hiện địa chỉ trang ngay bên dưới. Nếu cửa sổ mở nhưng đăng nhập Microsoft bị chặn bên trong, Mini App không biết và không báo lỗi: đóng cửa sổ đó. Cả hai trường hợp: bấm **Sao chép địa chỉ**, dán vào Chrome hoặc Safari rồi làm tiếp từ bước 1. Ô **Mã liên kết trên website** trong cùng mục dùng cho mã thủ công.
 
 Trên website, API vẫn trả `email_verification_required` cho email chưa xác minh, tách biệt với tài khoản bị khóa, sai tên miền hoặc sai phương thức đăng nhập ([tài liệu Firebase về email đã xác minh](https://firebase.google.com/docs/auth/users/#verified_email_addresses)).
 

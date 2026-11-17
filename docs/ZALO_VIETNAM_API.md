@@ -145,9 +145,10 @@ Không cần sửa Firestore rules hay tạo index: hai collection mới `zalo_l
 ```powershell
 Set-Location C:\DKAN-Zalo-API
 Copy-Item -LiteralPath .\server.cjs -Destination .\server.before-otp.cjs
+Copy-Item -LiteralPath .\Start-Api.ps1 -Destination .\Start-Api.before-otp.ps1
 ```
 
-3. Chép `server.cjs` mới vào `C:\DKAN-Zalo-API`. Đối chiếu `(Get-FileHash .\server.cjs -Algorithm SHA256).Hash` với dòng `server.cjs` trong `SHA256SUMS.txt` của gói (so không phân biệt hoa/thường). Bản này không thêm thư viện: giữ nguyên `node_modules`, chứng chỉ, IIS/Caddy.
+3. Chép `server.cjs` mới vào `C:\DKAN-Zalo-API`. Đối chiếu `(Get-FileHash .\server.cjs -Algorithm SHA256).Hash` với dòng `server.cjs` trong `SHA256SUMS.txt` của gói (so không phân biệt hoa/thường). Chép cả `Start-Api.ps1` mới của gói đè lên bản cũ: bản cũ chuyển hướng log bằng PowerShell, và trên Windows PowerShell 5.1 dòng cảnh báo đầu tiên của node (`DKAN_ZALO_VERIFY_FAILED`, `DKAN_ZALO_MAIL_*`) làm script dừng, kéo theo API; bản mới chuyển hướng qua `cmd.exe`, log thành UTF-8 (đổi tên `logs\api.log` cũ trước khi chạy để không lẫn UTF-16). Bản này không thêm thư viện: giữ nguyên `node_modules`, chứng chỉ, IIS/Caddy.
 4. Mở `notepad .env`, thêm bốn dòng `MS_GRAPH_*` như mẫu ở trên với giá trị thật. Không chép `.env.example` đè lên `.env`.
 5. Chạy lại task (hoặc `node .\server.cjs`), kiểm tra `DKAN_ZALO_API_READY` và `/healthz` như trên.
 

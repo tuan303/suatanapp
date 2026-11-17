@@ -482,6 +482,8 @@ export function AccountLinkPanel({
     setBusy('website');
     setError(null);
     setNotice(null);
+    // A website error must not read as an email-field error (aria-describedby).
+    setInvalidField(null);
     try {
       const { openWebview } = await import('zmp-sdk');
       if (!request.active()) return;
@@ -573,6 +575,7 @@ export function AccountLinkPanel({
     setBusy('claim');
     setError(null);
     setNotice(null);
+    setInvalidField(null);
     try {
       await withZaloToken(request, () => sendClaim(request, linkCode));
     } catch (caught) {
