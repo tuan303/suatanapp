@@ -2,6 +2,7 @@
 import { Buffer } from 'node:buffer';
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { ZaloIdentityError } from './verify-zalo-identity.mjs';
+import { isZaloLinkWithdrawn, zaloRevocationPath } from './zalo-withdrawal.mjs';
 import { MEAL_ERROR_STATUS } from '../shared/meal-contract.mjs';
 
 const FIVE_MINUTES = 5 * 60_000;
@@ -128,6 +129,7 @@ export function createAccountLinkService(options = {}) {
     rate: uid => `zalo_link_rate_limits/${appId}_${uid}`,
     otp: id => `zalo_link_otps/${appId}_${id}`,
     otpLimit: uid => `zalo_link_otp_limits/${appId}_${uid}`,
+    revocation: zaloId => zaloRevocationPath(appId, miniAppId, zaloId),
   };
   const clock = () => { const value = now(); if (!timeValid(value)) fail('service_unavailable'); return value; };
   const scope = value => !!value && typeof value === 'object' && value.appId === appId && value.miniAppId === miniAppId;
@@ -172,6 +174,15 @@ export function createAccountLinkService(options = {}) {
     if (day.length >= OTP_SENDS_PER_DAY || hour.length >= OTP_SENDS_PER_HOUR
       || (hour.length > 0 && at - hour.at(-1) < ONE_MINUTE)) fail('rate_limited');
     return day;
+  }
+  // This Zalo user's send history: its code document plus the times a consent
+  // withdrawal moved onto the hashed marker before deleting that document
+  // (keptZaloOtpSends). Each time counts once, since a document written after
+  // the withdrawal repeats them. A malformed marker list fails closed.
+  function zaloSendTimes(revocation, otp) {
+    const withdrawn = revocation?.otpSentAt === undefined ? [] : revocation.otpSentAt;
+    if (!sendsValid(withdrawn)) fail('service_unavailable');
+    return [...new Set([...withdrawn, ...(otp ? otp.sentAt : [])])].sort((a, b) => a - b);
   }
   // Same rule as getLink/revoke: a malformed owner mirror is never overwritten.
   function ownerZaloId(owner, uid) {
@@ -274,9 +285,10 @@ export function createAccountLinkService(options = {}) {
       const at = clock(), challenge = await tx.get(path.challenge(challengeId));
       availableChallenge(challenge, null, at);
       if (challenge.state !== 'waiting') fail('challenge_unavailable');
-      const [owner, link, collision] = await Promise.all([tx.get(path.owner(challenge.uid)),
-        tx.get(path.link(zaloUserId)), tx.get(path.claim(claimId))]);
+      const [owner, link, collision, revocation] = await Promise.all([tx.get(path.owner(challenge.uid)),
+        tx.get(path.link(zaloUserId)), tx.get(path.claim(claimId)), tx.get(path.revocation(zaloUserId))]);
       if (collision) fail('service_unavailable');
+      if (isZaloLinkWithdrawn(revocation, appId, miniAppId, challenge.createdAt)) fail('challenge_unavailable');
       if ((owner || link) && !samePair(owner, link, challenge.uid, zaloUserId)) fail('link_conflict');
       tx.set(path.challenge(challengeId), { ...challenge, state: 'pending', zaloUserId, claimId });
       tx.set(path.claim(claimId), { appId, miniAppId, uid: challenge.uid, zaloUserId, challengeId,
@@ -290,6 +302,10 @@ export function createAccountLinkService(options = {}) {
     if (!validChallenge(challenge) || (expectedUid && challenge.uid !== expectedUid)) fail('challenge_unavailable');
     let state = challenge.state;
     if (challenge.expiresAt <= clock()) state = 'expired';
+    if (numericId(challenge.zaloUserId)) {
+      const revocation = await store.get(path.revocation(challenge.zaloUserId));
+      if (isZaloLinkWithdrawn(revocation, appId, miniAppId, challenge.createdAt)) state = 'expired';
+    }
     if (state === 'approved') {
       if (!numericId(challenge.zaloUserId)) fail('challenge_unavailable');
       const [owner, link] = await Promise.all([store.get(path.owner(challenge.uid)), store.get(path.link(challenge.zaloUserId))]);
@@ -308,8 +324,10 @@ export function createAccountLinkService(options = {}) {
       if (!['pending', 'approved'].includes(challenge.state) || !numericId(challenge.zaloUserId)
         || !challengeIdValid(challenge.claimId)) fail('challenge_unavailable');
       const zaloUserId = challenge.zaloUserId;
-      const [owner, link, claimed] = await Promise.all([tx.get(path.owner(uid)), tx.get(path.link(zaloUserId)),
-        tx.get(path.claim(challenge.claimId))]);
+      const [owner, link, claimed, revocation] = await Promise.all([tx.get(path.owner(uid)), tx.get(path.link(zaloUserId)),
+        tx.get(path.claim(challenge.claimId)), tx.get(path.revocation(zaloUserId))]);
+      if (isZaloLinkWithdrawn(revocation, appId, miniAppId, challenge.createdAt)
+        || isZaloLinkWithdrawn(revocation, appId, miniAppId, claimed?.createdAt)) fail('challenge_unavailable');
       if (!scope(claimed) || claimed.uid !== uid || claimed.zaloUserId !== zaloUserId
         || claimed.challengeId !== challengeId || claimed.expiresAt !== challenge.expiresAt) fail('challenge_unavailable');
       if (challenge.state === 'approved') {
@@ -359,10 +377,11 @@ export function createAccountLinkService(options = {}) {
     if (!scope(link) || !uidValid(link.uid) || !identityLink(link, link.uid, zaloUserId)) fail('link_conflict');
     const schoolProfile = await profile(link.uid), sessionToken = opaque(), sessionId = hash(sessionToken);
     return store.runTransaction(async tx => {
-      const at = clock(), [current, owner, collision] = await Promise.all([tx.get(path.link(zaloUserId)),
-        tx.get(path.owner(link.uid)), tx.get(path.session(sessionId))]);
+      const at = clock(), [current, owner, collision, revocation] = await Promise.all([tx.get(path.link(zaloUserId)),
+        tx.get(path.owner(link.uid)), tx.get(path.session(sessionId)), tx.get(path.revocation(zaloUserId))]);
       if (collision) fail('service_unavailable');
-      if (!samePair(owner, current, link.uid, zaloUserId) || current.version !== link.version) fail('link_conflict');
+      if (!samePair(owner, current, link.uid, zaloUserId) || current.version !== link.version
+        || isZaloLinkWithdrawn(revocation, appId, miniAppId, current.linkedAt)) fail('link_conflict');
       const expiresAt = at + EIGHT_HOURS;
       tx.set(path.session(sessionId), { appId, miniAppId, uid: link.uid, zaloUserId,
         linkVersion: link.version, createdAt: at, expiresAt });
@@ -379,21 +398,26 @@ export function createAccountLinkService(options = {}) {
     // cooldown or once its sends are used up, every address gets the same 429
     // with no Auth call, so probing addresses costs a real mail each time.
     // Read-only and fail-fast; the transaction below repeats it race-safely.
-    const pending = await store.get(path.otp(zaloUserId));
-    if (pending) {
-      if (!scope(pending) || pending.zaloUserId !== zaloUserId || !sendsValid(pending.sentAt)) fail('service_unavailable');
+    const [pending, withdrawal] = await Promise.all([store.get(path.otp(zaloUserId)), store.get(path.revocation(zaloUserId))]);
+    if (pending && (!scope(pending) || pending.zaloUserId !== zaloUserId || !sendsValid(pending.sentAt))) fail('service_unavailable');
+    const previousSends = zaloSendTimes(withdrawal, pending);
+    if (previousSends.length) {
       const at = clock();
-      if (!replayable(pending, zaloUserId, email, at)) allowSend(pending.sentAt, at);
+      if (!pending || !replayable(pending, zaloUserId, email, at)) allowSend(previousSends, at);
     }
     const account = await schoolAccount(email), { uid } = account;
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0'), otpId = randomBytes(16).toString('hex');
     const sent = await store.runTransaction(async tx => {
       const at = clock();
-      const [otp, limit, link, owner] = await Promise.all([tx.get(path.otp(zaloUserId)), tx.get(path.otpLimit(uid)),
-        tx.get(path.link(zaloUserId)), tx.get(path.owner(uid))]);
+      const [otp, limit, link, owner, revocation] = await Promise.all([tx.get(path.otp(zaloUserId)), tx.get(path.otpLimit(uid)),
+        tx.get(path.link(zaloUserId)), tx.get(path.owner(uid)), tx.get(path.revocation(zaloUserId))]);
       const linkOwner = link && identityLink(link, link.uid, zaloUserId)
         ? (link.uid === uid ? owner : await tx.get(path.owner(link.uid))) : null;
       if (link && samePair(linkOwner, link, link.uid, zaloUserId)) return { linked: true }; // Linked meanwhile.
+      // verifyOtp refuses a code created at or before this Zalo user's consent
+      // withdrawal. Zalo stamps the event and its clock may run a little ahead
+      // of ours: answer "try again later" rather than mail a code that cannot work.
+      if (isZaloLinkWithdrawn(revocation, appId, miniAppId, at)) fail('service_unavailable');
       // verifyOtp would refuse these pairs, so do not mail a code that cannot work.
       if (link && !identityLink(link, uid, zaloUserId)) fail('link_conflict');
       const previousZalo = ownerZaloId(owner, uid);
@@ -406,16 +430,18 @@ export function createAccountLinkService(options = {}) {
       const fails = recentFails(limit, at);
       if (fails.length >= OTP_FAILS_PER_DAY) fail('rate_limited');
       // A repeat writes and mails nothing; the cooldown still holds for others.
-      if (replayable(otp, zaloUserId, account.email, at) && otp.uid === uid) {
+      if (replayable(otp, zaloUserId, account.email, at) && otp.uid === uid
+        && !isZaloLinkWithdrawn(revocation, appId, miniAppId, otp.createdAt)) {
         return { linked: false, replay: true, expiresAt: otp.expiresAt, resendAt: otp.sentAt.at(-1) + ONE_MINUTE, replacesExisting };
       }
-      // Per Zalo user: one person cannot mail many colleagues. Per uid: many
+      // Per Zalo user: one person cannot mail many colleagues, not even by
+      // withdrawing consent and granting it again (see zaloSendTimes). Per uid: many
       // Zalo accounts cannot flood one mailbox. The per-uid caps are shared,
       // so anyone who knows the address can use them up and keep the owner
       // from getting a code here for up to a day. That is the price of
       // bounding mail and guesses per mailbox; the owner then links through
       // the website, which these limits do not cover (the panel says so).
-      const zaloSends = allowSend(otp ? otp.sentAt : [], at), uidSends = allowSend(limit ? limit.sentAt : [], at);
+      const zaloSends = allowSend(zaloSendTimes(revocation, otp), at), uidSends = allowSend(limit ? limit.sentAt : [], at);
       const expiresAt = at + TEN_MINUTES;
       // All reads are complete. Replacing the document retires any earlier code.
       tx.set(path.otp(zaloUserId), { appId, miniAppId, otpId, zaloUserId, uid, email: account.email,
@@ -448,8 +474,12 @@ export function createAccountLinkService(options = {}) {
   async function verifyOtp(code, bearer) {
     const zaloUserId = await zalo(bearer);
     const checked = await store.runTransaction(async tx => {
-      const at = clock(), otp = await tx.get(path.otp(zaloUserId));
-      if (!validOtp(otp, zaloUserId) || otp.createdAt > at || otp.expiresAt <= at || otp.attempts >= OTP_ATTEMPTS) fail('otp_expired');
+      const at = clock(), [otp, revocation] = await Promise.all([tx.get(path.otp(zaloUserId)), tx.get(path.revocation(zaloUserId))]);
+      // A code sent before this Zalo user withdrew consent never links, even
+      // while the webhook cleanup that deletes it is pending or has failed.
+      // It is refused before comparing, so no attempt is counted.
+      if (!validOtp(otp, zaloUserId) || otp.createdAt > at || otp.expiresAt <= at || otp.attempts >= OTP_ATTEMPTS
+        || isZaloLinkWithdrawn(revocation, appId, miniAppId, otp.createdAt)) fail('otp_expired');
       const limit = await tx.get(path.otpLimit(otp.uid));
       if (limit && !limitValid(limit, otp.uid)) fail('service_unavailable');
       // Five tries per code alone would let many Zalo accounts keep guessing
@@ -487,16 +517,20 @@ export function createAccountLinkService(options = {}) {
     const sessionToken = opaque(), sessionId = hash(sessionToken);
     const result = await store.runTransaction(async tx => {
       const at = clock();
-      const [otp, owner, link, collision] = await Promise.all([tx.get(path.otp(zaloUserId)), tx.get(path.owner(uid)),
-        tx.get(path.link(zaloUserId)), tx.get(path.session(sessionId))]);
+      const [otp, owner, link, collision, revocation] = await Promise.all([tx.get(path.otp(zaloUserId)), tx.get(path.owner(uid)),
+        tx.get(path.link(zaloUserId)), tx.get(path.session(sessionId)), tx.get(path.revocation(zaloUserId))]);
+      // Rechecked here: a withdrawal may land between the two transactions.
       if (!validOtp(otp, zaloUserId) || otp.otpId !== otpId || otp.uid !== uid || otp.email !== email
-        || otp.verifiedAt === undefined || otp.createdAt > at || otp.expiresAt <= at) fail('otp_expired');
+        || otp.verifiedAt === undefined || otp.createdAt > at || otp.expiresAt <= at
+        || isZaloLinkWithdrawn(revocation, appId, miniAppId, otp.createdAt)) fail('otp_expired');
       if (collision) fail('service_unavailable');
       if (link && !identityLink(link, uid, zaloUserId)) fail('link_conflict'); // Never take over another uid's Zalo.
       const previousZalo = ownerZaloId(owner, uid);
       const previous = previousZalo && previousZalo !== zaloUserId ? await tx.get(path.link(previousZalo)) : null;
       // All reads are complete. An intact pair (a parallel retry) keeps its
       // version so the session that retry already issued stays valid.
+      // (No withdrawn pair can be intact here: the webhook deletes it in the
+      // same transaction that writes the marker.)
       const kept = samePair(owner, link, uid, zaloUserId);
       const nextLink = kept ? link : { appId, miniAppId, uid, zaloUserId, version: randomBytes(16).toString('hex'), linkedAt: at };
       if (!kept) { tx.set(path.owner(uid), nextLink); tx.set(path.link(zaloUserId), nextLink); }
@@ -546,11 +580,13 @@ export function createAccountLinkService(options = {}) {
     // than authorizing one transaction and mutating data in a later unchecked one.
     const assertCurrent = async readPrivate => {
       if (typeof readPrivate !== 'function') fail('service_unavailable');
-      const [current, link, owner] = await Promise.all([readPrivate(path.session(sessionId)),
-        readPrivate(path.link(session.zaloUserId)), readPrivate(path.owner(session.uid))]);
+      const [current, link, owner, revocation] = await Promise.all([readPrivate(path.session(sessionId)),
+        readPrivate(path.link(session.zaloUserId)), readPrivate(path.owner(session.uid)),
+        readPrivate(path.revocation(session.zaloUserId))]);
       if (!validSession(current, clock()) || current.uid !== session.uid || current.zaloUserId !== session.zaloUserId
         || current.linkVersion !== session.linkVersion || !samePair(owner, link, session.uid, session.zaloUserId)
-        || link.version !== session.linkVersion) fail('session_expired');
+        || link.version !== session.linkVersion
+        || isZaloLinkWithdrawn(revocation, appId, miniAppId, link.linkedAt)) fail('session_expired');
     };
     await store.runTransaction(tx => assertCurrent(key => tx.get(key)));
     return Object.freeze({ uid: session.uid, profile: Object.freeze(schoolProfile), assertCurrent });

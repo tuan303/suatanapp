@@ -2,19 +2,22 @@
 import { createHash, createHmac } from 'node:crypto';
 import { createAccountLinkService, AccountLinkError } from '../../miniapp/server/account-links.mjs';
 import { verifyZaloIdentity, ZaloIdentityError } from '../../miniapp/server/verify-zalo-identity.mjs';
-import { createMealBusinessService } from '../../miniapp/server/meal-business.mjs';
+import { createMealBusinessService, OWN_EXEMPTION_LIMIT } from '../../miniapp/server/meal-business.mjs';
 import { MEAL_ACTION_FIELDS } from '../../miniapp/shared/meal-contract.mjs';
 import { readZaloMailConfig, inspectZaloMailEnv, createZaloMailer, reportZaloMailFailure } from './zalo-mail.mjs';
+import { reportZaloDiagnostic } from './zalo-diagnostics.mjs';
 
 const PROJECT = 'dkan-4b061';
 const SCHOOL_EMAIL = /^[A-Za-z0-9][A-Za-z0-9._%+-]{0,63}@hoangmaistarschool\.edu\.vn$/i;
 const UID = /^(?!__.*__$)[A-Za-z0-9_-]{1,128}$/;
 const NUMERIC_ID = /^[1-9][0-9]{0,39}$/;
 const PRIVATE_COLLECTIONS = new Set(['zalo_link_challenges', 'zalo_link_claims', 'zalo_link_sessions',
-  'zalo_links', 'zalo_link_owners', 'zalo_link_rate_limits', 'zalo_link_otps', 'zalo_link_otp_limits']);
-// OTP code hashes and send counters belong to the link service alone. Business
-// transactions only need the session/link/owner guards, so they cannot read them.
-const LINK_ONLY_COLLECTIONS = new Set(['zalo_link_otps', 'zalo_link_otp_limits']);
+  'zalo_links', 'zalo_link_owners', 'zalo_link_rate_limits', 'zalo_link_otps', 'zalo_link_otp_limits',
+  'zalo_link_revocations', 'zalo_webhook_events']);
+// OTP code hashes, send counters and webhook receipts belong to the link and
+// withdrawal services alone. Business transactions only need the session, link,
+// owner and consent-withdrawal guards, so they cannot read them.
+const LINK_ONLY_COLLECTIONS = new Set(['zalo_link_otps', 'zalo_link_otp_limits', 'zalo_webhook_events']);
 // Versioned label: changing it (or ZALO_APP_SECRET_KEY) invalidates every
 // pending code at once, which is the intended way to rotate the OTP key.
 const OTP_SECRET_LABEL = 'dkan-zalo-email-otp-v1';
@@ -24,8 +27,11 @@ const accountNotFound = () => { throw new AccountLinkError(404, 'account_not_fou
 const safeText = (value, limit) => typeof value === 'string'
   ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, limit) : '';
 
-/** One fixed log line, with no identity, token, request, body or secret. */
-export function reportZaloVerificationFailure(error, report = console.warn) {
+/**
+ * One fixed log line, with no identity, token, request, body or secret. Any
+ * caller can trigger it with a junk token, so the default reporter is throttled.
+ */
+export function reportZaloVerificationFailure(error, report = reportZaloDiagnostic) {
   if (!(error instanceof ZaloIdentityError)) return;
   const source = error.diagnostic;
   const stages = ['transport', 'http', 'provider', 'response', 'timeout'];
@@ -112,7 +118,7 @@ export function createFirestoreLinkStore(db) {
 }
 
 /** Business access is bound to one server-verified UID, including inside retries. */
-export function createFirestoreMealStore(db, uid) {
+export function createFirestoreMealStore(db, uid, email = '') {
   if (typeof uid !== 'string' || !UID.test(uid)) unavailable();
   const month = /^\d{4}-(?:0[1-9]|1[0-2])$/;
   const date = /^\d{4}-\d{2}-\d{2}$/;
@@ -142,8 +148,20 @@ export function createFirestoreMealStore(db, uid) {
     return db.runTransaction(transaction => callback({
       async get(path) { const snapshot = await transaction.get(ref(path)); return snapshot.exists ? snapshot.data() : null; },
       async list(name, count) {
-        const maximum = name === 'events' ? 20 : name === 'meal_surveys' ? 12 : 0;
+        // Exemptions: the business layer asks for one row more than it trusts.
+        const maximum = name === 'events' ? 20 : name === 'meal_surveys' ? 12
+          : name === 'meal_checkin_exemptions' ? OWN_EXEMPTION_LIMIT + 1 : 0;
         if (!Number.isInteger(count) || count < 1 || count > maximum) unavailable();
+        if (name === 'meal_checkin_exemptions') {
+          if (typeof email !== 'string' || !SCHOOL_EMAIL.test(email)) unavailable();
+          const address = email.toLowerCase();
+          // Only documents carrying the verified account email, each with its ID
+          // so the business layer can validate it strictly (ID = staff code).
+          // Broken or too many documents are data for that layer, never a 503 here.
+          const snapshot = await transaction.get(db.collection(name).where('email', '==', address).limit(count));
+          return snapshot.docs.map(document => ({ id: document.id, data: document.data() }))
+            .filter(row => row.data?.email === address);
+        }
         const query = db.collection(name).orderBy(name === 'events' ? 'createdAt' : 'weekId', 'desc').limit(count);
         const snapshot = await transaction.get(query);
         return snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
@@ -215,7 +233,7 @@ export function createSchoolAccountDirectory(auth, db) {
  */
 export function createZaloEmailLinkOptions(input = {}) {
   try {
-    const { env = {}, appSecret, auth, db, fetchImpl, report = console.warn } = input;
+    const { env = {}, appSecret, auth, db, fetchImpl, report = reportZaloDiagnostic } = input;
     const options = { otpSecret: deriveZaloOtpSecret(appSecret), ...createSchoolAccountDirectory(auth, db) };
     let mailer = null;
     try {
@@ -239,12 +257,30 @@ export function createZaloBusinessDispatcher(links, db) {
   return { async run(action, body, bearer) {
     if (!Object.hasOwn(MEAL_ACTION_FIELDS, action)) return links.run(action, body, bearer);
     const identity = await links.authorizeMiniSession(bearer);
-    const business = createMealBusinessService({ store: createFirestoreMealStore(db, identity.uid) });
+    const business = createMealBusinessService({ store: createFirestoreMealStore(db, identity.uid, identity.profile.email) });
     return business.run(action, body, identity);
   } };
 }
 
 let cachedFingerprint, cachedService;
+
+async function firebaseResources(config, fingerprint) {
+  const [{ initializeApp, getApps, cert }, { getAuth }, { getFirestore }] = await Promise.all([
+    import('firebase-admin/app'), import('firebase-admin/auth'), import('firebase-admin/firestore'),
+  ]);
+  const appName = `dkan-zalo-${fingerprint.slice(0, 16)}`;
+  const firebase = getApps().find(app => app.name === appName)
+    || initializeApp({ credential: cert(config.credential), projectId: PROJECT }, appName);
+  return { auth: getAuth(firebase), db: getFirestore(firebase) };
+}
+
+/** Same Firebase app as the RPC service; used by the consent-withdrawal webhook. */
+export async function getLiveZaloDatabase(env = process.env) {
+  const config = readZaloRuntimeConfig(env);
+  const fingerprint = createHash('sha256').update(JSON.stringify(config)).digest('hex');
+  return (await firebaseResources(config, fingerprint)).db;
+}
+
 export async function getLiveZaloService(env = process.env) {
   const config = readZaloRuntimeConfig(env);
   const fingerprint = createHash('sha256').update(JSON.stringify(config)).digest('hex');
@@ -253,13 +289,7 @@ export async function getLiveZaloService(env = process.env) {
   if (cachedFingerprint === serviceKey && cachedService) return cachedService;
   cachedFingerprint = serviceKey;
   cachedService = (async () => {
-    const [{ initializeApp, getApps, cert }, { getAuth }, { getFirestore }] = await Promise.all([
-      import('firebase-admin/app'), import('firebase-admin/auth'), import('firebase-admin/firestore'),
-    ]);
-    const appName = `dkan-zalo-${fingerprint.slice(0, 16)}`;
-    const firebase = getApps().find(app => app.name === appName)
-      || initializeApp({ credential: cert(config.credential), projectId: PROJECT }, appName);
-    const auth = getAuth(firebase), db = getFirestore(firebase);
+    const { auth, db } = await firebaseResources(config, fingerprint);
     const links = createAccountLinkService({
       appId: config.appId, miniAppId: config.miniAppId, store: createFirestoreLinkStore(db),
       async verifySchoolToken(token, options) {

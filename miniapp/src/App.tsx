@@ -51,6 +51,21 @@ export function MealDayCard({ day }: { day: DayView }) {
   </article>;
 }
 
+/** Lịch sử chấm ăn của tháng đang chọn, ở mục Cá nhân. */
+export function MealHistory({ data }: { data: MealSnapshot }) {
+  // Agent chỉ tách lượt chấm cho người có đơn của tháng đó: tháng không đăng ký thì
+  // mọi ngày là "Không đăng ký" và lượt chấm (nếu có) không bao giờ về tới đây.
+  // Lượt chấm đã đồng bộ trước khi đơn bị xóa vẫn hiện giờ chấm: khi đó không báo
+  // "không hiển thị lượt chấm" ngay trên các giờ đó.
+  const tapShown = data.history.days.some(day => day.result.meals.breakfast.time || day.result.meals.lunch.time || day.result.unrecognized.length > 0);
+  const unregistered = !data.registration.record && data.month <= data.today.slice(0, 7) && !tapShown;
+  return <>
+    {unregistered && <div className="ma-inline-info"><p>Thầy/Cô không đăng ký suất ăn {monthLabel(data.month).toLowerCase()} nên Mini App không hiển thị lượt chấm của tháng này (nếu có). Nếu nhận được email cảnh báo chấm ăn khi chưa đăng ký, Thầy/Cô vui lòng liên hệ Bộ phận Dinh dưỡng để được đối chiếu.</p></div>}
+    <div className="ma-section-heading"><h2>Lịch sử chấm ăn</h2><span>{data.history.days.length} ngày</span></div>{data.history.conflict && <div className="ma-inline-info"><p>Mã nhân viên có dữ liệu cần đối chiếu. Các ngày liên quan được giữ trạng thái chưa kết luận.</p></div>}
+    {data.history.days.length ? <section className="ma-history-list">{data.history.days.map(day => <MealDayCard key={day.date} day={day} />)}</section> : <section className="ma-card ma-empty"><h2>Chưa có lượt chấm trong tháng</h2><p>Chọn một tháng khác hoặc tải lại sau lần đồng bộ từ máy nhận diện.</p></section>}
+  </>;
+}
+
 export default function App() {
   const setup = useMemo(() => { try { const account = createAccountLinkClient({ origin: import.meta.env.VITE_DKAN_API_ORIGIN, development: import.meta.env.DEV }); return { account, business: createMealBusinessClient(account), error: null }; } catch (error) { return { account: null, business: null, error: accountLinkMessage(error) }; } }, []);
   const [handoffCode, setHandoffCode] = useState(locationHandoffCode);
@@ -285,8 +300,7 @@ export default function App() {
             {tab === 'personal' && <>
               <PageTitle eyebrow="KHÔNG GIAN CÁ NHÂN" title="Chấm ăn của tôi" description="Tra cứu đăng ký và lượt chấm từ máy nhận diện theo từng ngày." />
               <section className="ma-card ma-profile"><div className="ma-avatar">{profile?.fullName.split(/\s+/).filter(Boolean).slice(-2).map(word => word[0]).join('')}</div><div><h2>{profile?.fullName}</h2><p>{profile?.department} · Mã NV {profile?.employeeId || 'Chưa cập nhật'}</p><Status>Đã xác minh</Status></div></section>{monthPicker}
-              <div className="ma-section-heading"><h2>Lịch sử chấm ăn</h2><span>{data.history.days.length} ngày</span></div>{data.history.conflict && <div className="ma-inline-info"><p>Mã nhân viên có dữ liệu cần đối chiếu. Các ngày liên quan được giữ trạng thái chưa kết luận.</p></div>}
-              {data.history.days.length ? <section className="ma-history-list">{data.history.days.map(day => <MealDayCard key={day.date} day={day} />)}</section> : <section className="ma-card ma-empty"><h2>Chưa có lượt chấm trong tháng</h2><p>Chọn một tháng khác hoặc tải lại sau lần đồng bộ từ máy nhận diện.</p></section>}
+              <MealHistory data={data} />
               <p className="ma-footnote">Dữ liệu cá nhân cập nhật: {atLabel(data.history.updatedAt)}</p><button className="ma-link-secondary" onClick={() => setModal('link')}>Thông tin tài khoản và đăng xuất</button>
             </>}
           </> : !error ? <section className="ma-card ma-empty"><h2>Chưa tải được dữ liệu</h2><button className="ma-primary" onClick={() => setReloadVersion(value => value + 1)}>Thử tải lại</button></section> : null}

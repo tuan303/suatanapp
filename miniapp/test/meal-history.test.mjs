@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPersonalMealHistory } from '../server/meal-history.mjs';
+import { EXEMPTION_HOLD, buildPersonalMealHistory } from '../server/meal-history.mjs';
 import { evaluatePersonDay, mealDaysOfMonth } from '../../agent/lib/meal-rules.mjs';
 
 const registration = { userId: 'staff_A', employeeId: '100001', month: '2026-10', breakfastCount: 22,
@@ -10,6 +10,108 @@ const fixture = overrides => ({ month: '2026-10', today: '2026-10-19', now: new 
   tapsDoc: { updatedAt: at, days: { '2026-10-19': ['07:30', '12:05', '15:20'] } },
   cancelations: [], sync: { coverage: { '2026-10-19': at } }, offDays: [], excludedIds: [], ...overrides });
 const day = (history, date = '2026-10-19') => history.days.find(row => row.date === date);
+const EMAIL = 'sample@hoangmaistarschool.edu.vn';
+// Stored document as the Firestore adapter returns it: { id, data }, id = staff code.
+const policyDoc = (data = {}, id = '100001') => ({ id, data: { employeeId: '100001', email: EMAIL,
+  fullName: 'Nhân viên mẫu', periods: [{ from: '2026-10-19', to: null }], ...data } });
+// Both meals of 16/10 and 19/10 are final: synchronized after lunch.
+const closed = { tapsDoc: null, sync: { coverage: { '2026-10-16': at, '2026-10-19': at } } };
+
+test('verified personal email applies only dated lunch exemptions and preserves the breakfast obligation', () => {
+  const input = fixture({ registration: { ...registration, email: 'stale@hoangmaistarschool.edu.vn' },
+    email: EMAIL, tapsDoc: null, checkinExemptionDocs: [policyDoc()] });
+  const history = buildPersonalMealHistory(input);
+  assert.equal(day(history).result.meals.breakfast.code, 'missing');
+  assert.deepEqual(day(history).result.meals.lunch, { code: 'exempt', time: null });
+  assert.equal(day(history, '2026-10-16').result.meals.lunch.code, 'pending');
+});
+
+test('per-meal periods: a breakfast exemption waives breakfast only and a closed period ends on its last day', () => {
+  const history = buildPersonalMealHistory(fixture({ ...closed, email: EMAIL, checkinExemptionDocs: [policyDoc({ periods: [
+    { from: '2026-10-01', to: '2026-10-16', meals: ['lunch'] }, { from: '2026-10-19', to: '2026-10-19', meals: ['breakfast'] }] })] }));
+  assert.deepEqual(day(history).result.meals.breakfast, { code: 'exempt', time: null });
+  assert.equal(day(history).result.meals.lunch.code, 'missing');
+  assert.equal(day(history, '2026-10-16').result.meals.breakfast.code, 'missing');
+  assert.equal(day(history, '2026-10-16').result.meals.lunch.code, 'exempt');
+});
+
+test('a broken own exemption never throws: registered untapped meals stay pending, taps and other states unchanged', () => {
+  for (const docs of [
+    [policyDoc({ periods: [] })],                          // hỏng, đúng mã trên đơn
+    [policyDoc({ fullName: 7 })],                           // sai kiểu trường
+    [policyDoc({}, 'abc')],                                 // mã tài liệu khác mã NV, vẫn nêu mã 100001
+    [policyDoc(), policyDoc({}, 'abc')],                    // bản hỏng cùng mã giữ lại cả bản hợp lệ
+    [policyDoc({ employeeId: 'x' }, 'x')],                  // không xác định được mã: chưa rõ với mọi mã
+    [policyDoc({ periods: [{ from: '2026-10-01', to: null }, { from: '2026-10-05', to: null }] })], // chồng nhau
+    null,                                                   // danh sách không đọc đủ
+    [{ id: '100001', data: null }], [null], 'not-a-list',   // sai dạng từ bộ đọc dữ liệu
+  ]) {
+    const history = buildPersonalMealHistory(fixture({ ...closed, email: EMAIL, checkinExemptionDocs: docs,
+      tapsDoc: { days: { '2026-10-19': ['07:30'] } } }));
+    assert.deepEqual(day(history).result.meals.breakfast, { code: 'ok', time: '07:30' });
+    assert.deepEqual(day(history).result.meals.lunch, { code: 'pending', time: null }, JSON.stringify(docs));
+    assert.equal(day(history, '2026-10-16').result.meals.lunch.code, 'pending');
+    // The held day says why, instead of looking like it waits for the next sync.
+    assert.equal(day(history).hold, EXEMPTION_HOLD);
+    assert.equal(day(history, '2026-10-16').hold, EXEMPTION_HOLD);
+  }
+  // Only coverage is withheld: not-registered meals and exclusions keep their meaning.
+  const lunchOnly = buildPersonalMealHistory(fixture({ ...closed, email: EMAIL, checkinExemptionDocs: null,
+    registration: { ...registration, breakfastCount: 0 } }));
+  assert.equal(day(lunchOnly).result.meals.breakfast.code, 'not_registered');
+});
+
+test('a broken document naming another staff code under the same email does not withhold the valid own policy', () => {
+  const history = buildPersonalMealHistory(fixture({ ...closed, email: EMAIL,
+    checkinExemptionDocs: [policyDoc(), policyDoc({ employeeId: '100002', periods: [] }, '100002')] }));
+  assert.equal(day(history).result.meals.breakfast.code, 'missing');
+  assert.deepEqual(day(history).result.meals.lunch, { code: 'exempt', time: null });
+  assert.equal(day(history).hold, null);
+  // Unknown state is decided per registration: a month registered under the broken code is held.
+  const other = buildPersonalMealHistory(fixture({ ...closed, email: EMAIL, registration: { ...registration, employeeId: ' 100002 ' },
+    checkinExemptionDocs: [policyDoc(), policyDoc({ employeeId: '100002', periods: [] }, '100002')] }));
+  assert.equal(day(other).result.meals.lunch.code, 'pending');
+  assert.equal(day(other).result.meals.breakfast.code, 'pending');
+  assert.equal(day(other).hold, EXEMPTION_HOLD);
+});
+
+test('the exemption hold explains only days with a pending meal and never replaces an existing hold code', () => {
+  // Accepted unchanged by the LIVE-20261103.1 and current parsers: text <= 80 UTF-16 units, NFC, no control character.
+  assert.ok(EXEMPTION_HOLD.length <= 80 && EXEMPTION_HOLD === EXEMPTION_HOLD.normalize('NFC') && !/[\u0000-\u001f\u007f]/.test(EXEMPTION_HOLD));
+  const broken = { email: EMAIL, checkinExemptionDocs: [policyDoc({ periods: [] })] };
+  // Tapped, off-day and not-registered meals do not depend on the exemption: those days are not held.
+  const history = buildPersonalMealHistory(fixture({ ...closed, ...broken, offDays: ['2026-10-16'],
+    registration: { ...registration, breakfastCount: 0 },
+    tapsDoc: { days: { '2026-10-19': ['12:05'], '2026-10-16': ['12:10'], '2026-10-15': ['07:20'] } } }));
+  assert.deepEqual([day(history).hold, day(history).result.meals.breakfast.code, day(history).result.meals.lunch.code], [null, 'not_registered', 'ok']);
+  assert.deepEqual([day(history, '2026-10-16').hold, day(history, '2026-10-16').result.meals.lunch.code], [null, 'off_day']);
+  // Before the oldest kept coverage the day stays 'expired'; a registered meal not yet over is pending as well.
+  assert.equal(day(history, '2026-10-15').hold, 'expired');
+  const morning = buildPersonalMealHistory(fixture({ ...broken, now: new Date('2026-10-19T00:30:00Z'), tapsDoc: null, sync: { coverage: {} } }));
+  assert.equal(day(morning).hold, EXEMPTION_HOLD);
+  const guarded = buildPersonalMealHistory(fixture({ ...broken, tapsDoc: null, sync: { coverage: { '2026-10-19': at }, alerts: { '2026-10-19': { held: true } } } }));
+  assert.equal(day(guarded).hold, 'guarded');
+  const conflict = buildPersonalMealHistory(fixture({ ...broken, tapsDoc: { conflict: true, conflictSince: '2026-10-19', updatedAt: at, days: {} } }));
+  assert.equal(day(conflict).hold, 'conflict');
+  // Without a registration nothing is pending, so even an unidentified broken document holds no day.
+  const unregistered = buildPersonalMealHistory(fixture({ email: EMAIL, registration: null, tapsDoc: null, sync: { coverage: {} },
+    checkinExemptionDocs: [policyDoc({ employeeId: 'x' }, 'x')] }));
+  assert.ok(unregistered.days.every(row => row.hold === null && row.result.meals.lunch.code === 'not_registered'));
+});
+
+test('only documents carrying the verified email count, and stored policies must already be canonical', () => {
+  const foreign = policyDoc({ email: 'other@hoangmaistarschool.edu.vn', periods: [] }, 'abc'); // names 100001
+  const kept = buildPersonalMealHistory(fixture({ ...closed, email: ` ${EMAIL.toUpperCase()} `, checkinExemptionDocs: [policyDoc(), foreign] }));
+  assert.deepEqual(day(kept).result.meals.lunch, { code: 'exempt', time: null });
+  for (const docs of [[policyDoc({ email: 'other@hoangmaistarschool.edu.vn' })], [policyDoc({ email: EMAIL.toUpperCase() })]]) {
+    assert.equal(day(buildPersonalMealHistory(fixture({ ...closed, email: EMAIL, checkinExemptionDocs: docs }))).result.meals.lunch.code, 'missing');
+  }
+  assert.equal(day(buildPersonalMealHistory(fixture({ ...closed, checkinExemptionDocs: [policyDoc()] }))).result.meals.lunch.code, 'missing');
+  // A stored code that would need normalizing is a broken document, never silently applied.
+  const padded = buildPersonalMealHistory(fixture({ ...closed, email: EMAIL, checkinExemptionDocs: [policyDoc({ employeeId: '100001 ' })] }));
+  assert.equal(day(padded).result.meals.lunch.code, 'pending');
+  assert.equal(day(padded).hold, EXEMPTION_HOLD);
+});
 
 test('personal history mirrors shared meal decisions and returns newest day first', () => {
   const input = fixture(), history = buildPersonalMealHistory(input);

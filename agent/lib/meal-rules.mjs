@@ -15,6 +15,10 @@
  * KHÔNG import gì từ Node hay trình duyệt: file phải chạy được ở cả hai phía.
  */
 
+import { createCheckinExemptionMatcher, normalizeExemptionEmployeeId as normId } from './checkin-exemptions.mjs';
+
+export { normId };
+
 /** @typedef {'breakfast' | 'lunch'} Meal */
 
 /**
@@ -23,6 +27,7 @@
  * @property {string} employeeId
  * @property {string} [fullName]
  * @property {string} [department]
+ * @property {string} [email]
  * @property {number} breakfastCount
  * @property {number} lunchCount
  * @property {string} [firstMealDate]  YYYY-MM-DD, ngày bắt đầu ăn
@@ -75,8 +80,6 @@ export const VN_TZ = 'Asia/Ho_Chi_Minh';
  *
  * @param {unknown} v
  */
-export const normId = v => String(v ?? '').replace(/[\s 　]/g, '').toUpperCase();
-
 /** Mã không dùng để đối soát được: trống, hoặc N/A do chưa khai hồ sơ nhân sự. */
 export const isUsableId = (/** @type {string} */ id) => id !== '' && id !== 'N/A' && id !== 'NA';
 
@@ -626,6 +629,11 @@ export function reconcile({ byDate, dates, registrations: allRegistrations, canc
  *   | 'pending'           // phải ăn, chưa thấy lượt chấm, nhưng chưa có dữ liệu chốt
  *   | 'missing'           // phải ăn, dữ liệu đã chốt mà không có lượt chấm
  * } MealStatusCode
+ *
+ * evaluatePersonDay() còn trả 'exempt' (đã đăng ký bữa này và được miễn chấm
+ * trong ngày), nhưng CHỈ khi người gọi truyền dữ liệu miễn chấm — hiện chỉ máy
+ * chủ Mini App. Chưa thêm vào kiểu trên vì trang web (src/pages/MyMeals.tsx)
+ * duyệt đủ mọi mã và chưa có cách hiển thị miễn chấm.
  */
 
 /**
@@ -672,16 +680,20 @@ export function isMealFinal(date, meal, coverageAt, now) {
  *   times?: string[],                    // giờ chấm thô HH:MM trong ngày
  *   offDays?: Iterable<string>,
  *   excludedIds?: Iterable<string>,
+ *   checkinExemptions?: import('./checkin-exemptions.mjs').CheckinExemption[],
+ *   checkinExemptionMatcher?: ReturnType<typeof createCheckinExemptionMatcher>,
+ *   email?: string,
  *   coverageAt?: string | null,
  *   now?: Date,
  * }} input
  */
-export function evaluatePersonDay({ date, registration, cancelations = [], times = [], offDays = [], excludedIds = [], coverageAt = null, now }) {
+export function evaluatePersonDay({ date, registration, cancelations = [], times = [], offDays = [], excludedIds = [], checkinExemptions = [], checkinExemptionMatcher, email, coverageAt = null, now }) {
   const rec = classifyTimes(times);
   const reg = registration ? normalizeRegistration(registration) : null;
   const cancelSet = buildCancelSet(cancelations);
   const excluded = new Set([...excludedIds].map(normId));
   const offDay = !isMealDay(date, offDays);
+  const isExempt = checkinExemptionMatcher ?? createCheckinExemptionMatcher(checkinExemptions);
 
   /** @type {Record<Meal, MealStatus>} */
   const meals = /** @type {any} */ ({});
@@ -697,6 +709,10 @@ export function evaluatePersonDay({ date, registration, cancelations = [], times
     }
     if (reg && !isUsableId(reg.employeeId)) { meals[meal] = { code: 'invalid_id', time }; continue; }
     if (time) { meals[meal] = { code: 'ok', time }; continue; }
+    if (reg && isExempt({ date, employeeId: reg.employeeId, email: email ?? reg.email, meal })) {
+      meals[meal] = { code: 'exempt', time: null };
+      continue;
+    }
     meals[meal] = { code: isMealFinal(date, meal, coverageAt, now) ? 'missing' : 'pending', time: null };
   }
 

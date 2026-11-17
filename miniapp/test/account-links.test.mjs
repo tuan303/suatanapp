@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { createHash, createHmac } from 'node:crypto';
 import { createAccountLinkService, AccountLinkError } from '../server/account-links.mjs';
 import { ZaloIdentityError } from '../server/verify-zalo-identity.mjs';
+import { zaloRevocationPath } from '../server/zalo-withdrawal.mjs';
 
 const APP = '1755714512504824995', MINI = '3378419117469948059';
 const ZALO_A = '123456789000000001', ZALO_B = '123456789000000002';
@@ -174,7 +175,8 @@ test('internal meal authorization binds the session UID without exposing it thro
     await context.assertCurrent(async key => { readPaths.push(key); return tx.get(key); });
     tx.set('TEST_ONLY_meal_write', { uid: context.uid });
   });
-  assert.deepEqual(readPaths.sort(), [`zalo_link_owners/${APP}_staff_A`, `zalo_link_sessions/${sha(login.sessionToken)}`, `zalo_links/${APP}_${ZALO_A}`].sort());
+  assert.deepEqual(readPaths.sort(), [`zalo_link_owners/${APP}_staff_A`, `zalo_link_sessions/${sha(login.sessionToken)}`,
+    `zalo_links/${APP}_${ZALO_A}`, zaloRevocationPath(APP, MINI, ZALO_A)].sort());
   assert.deepEqual(await f.store.get('TEST_ONLY_meal_write'), { uid: 'staff_A' });
 });
 
@@ -288,7 +290,7 @@ test('stored documents contain hashes and private owner metadata, never plaintex
   assert.ok(f.store.docs.has(`zalo_link_sessions/${sha(login.sessionToken)}`));
   assert.deepEqual(f.store.docs.get(`zalo_links/${APP}_${ZALO_A}`), f.store.docs.get(`zalo_link_owners/${APP}_staff_A`));
   assert.deepEqual(Object.keys(login.profile).sort(), ['department', 'email', 'employeeId', 'fullName']);
-  assert.ok(f.store.operations.every(([, path]) => /^zalo_(link_challenges|link_claims|link_sessions|links|link_owners|link_rate_limits)\//.test(path)));
+  assert.ok(f.store.operations.every(([, path]) => /^zalo_(link_challenges|link_claims|link_sessions|links|link_owners|link_rate_limits|link_revocations)\//.test(path)));
 });
 
 test('one claim consumes the code even when the same Zalo account retries', async () => {
@@ -573,7 +575,7 @@ test('mini.requestOtp normalizes the school email, masks it, mails a 6-digit cod
   assert.equal((await f.run('mini.requestOtp', { email: 'td' }, 'zalo-A')).emailMasked, 't***@hoangmaistarschool.edu.vn');
   // No private mail, Auth or store text leaves through a successful response either.
   assert.ok(!JSON.stringify([sent, full]).includes(PRIVATE));
-  assert.ok(f.store.operations.every(([, key]) => /^zalo_(links|link_owners|link_otps|link_otp_limits)\//.test(key)));
+  assert.ok(f.store.operations.every(([, key]) => /^zalo_(links|link_owners|link_otps|link_otp_limits|link_revocations)\//.test(key)));
 });
 
 test('an already linked Zalo user gets state linked without an account lookup, mail or OTP document', async () => {
@@ -976,7 +978,7 @@ test('a correct code links the pair, signs in like mini.login, retires the OTP a
   assert.deepEqual(await f.run('mini.requestOtp', { email: 'a' }, 'zalo-A'), { state: 'linked' });
   await rejects(f.run('mini.verifyOtp', { code }, 'zalo-A'), 'otp_expired', 410);
   assertNoRawCode(f, code);
-  assert.ok(f.store.operations.every(([, key]) => /^zalo_(link_sessions|links|link_owners|link_otps|link_otp_limits|link_rate_limits)\//.test(key)));
+  assert.ok(f.store.operations.every(([, key]) => /^zalo_(link_sessions|links|link_owners|link_otps|link_otp_limits|link_rate_limits|link_revocations)\//.test(key)));
   // The website can revoke an email-made link like any other.
   await f.run('web.revokeLink');
   await rejects(f.run('mini.me', {}, result.sessionToken), 'session_expired', 401);

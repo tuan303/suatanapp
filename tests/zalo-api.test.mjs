@@ -375,6 +375,27 @@ test('link store reaches the OTP documents but business transactions can never r
   assert.deepEqual(reads, ['zalo_link_sessions/test_session']);
 });
 
+test('consent-withdrawal marker guards business transactions, while webhook receipts stay link-store only', async () => {
+  const marker = `zalo_link_revocations/123_${'a'.repeat(64)}`, receipt = `zalo_webhook_events/${'b'.repeat(64)}`;
+  const calls = [];
+  const db = { collection: name => ({ doc: id => ({ async get() { calls.push(`${name}/${id}`); return { exists: false }; } }) }) };
+  const store = createFirestoreLinkStore(db);
+  assert.equal(await store.get(marker), null);
+  assert.equal(await store.get(receipt), null);
+  for (const path of [`${marker}/x`, 'zalo_link_revocations/../x', 'zalo_webhook_event/abc']) await assert.rejects(store.get(path));
+  assert.deepEqual(calls, [marker, receipt]);
+  const reads = [];
+  const mealDb = { doc: path => ({ path }), runTransaction: fn => fn({ async get(ref) { reads.push(ref.path); return { exists: false }; } }) };
+  const meal = createFirestoreMealStore(mealDb, 'user_A');
+  // assertCurrent reads the marker inside every business transaction.
+  assert.equal(await meal.runTransaction(tx => tx.get(marker)), null);
+  await assert.rejects(meal.runTransaction(tx => tx.get(receipt)), error => error.code === 'service_unavailable');
+  for (const path of [marker, receipt]) {
+    await assert.rejects(meal.runTransaction(async tx => tx.set(path, { userId: 'user_A' })), error => error.code === 'service_unavailable');
+  }
+  assert.deepEqual(reads, [marker]);
+});
+
 test('OTP secret is a labelled HMAC of the Zalo app secret, never the secret itself', () => {
   const secret = 'TEST_ONLY_SECRET_123456789', derived = deriveZaloOtpSecret(secret);
   assert.match(derived, /^[a-f0-9]{64}$/);

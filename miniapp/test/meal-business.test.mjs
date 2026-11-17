@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AccountLinkError } from '../server/account-links.mjs';
 import { createMealBusinessService, mealDeadlineMillis, mealMonthOptions } from '../server/meal-business.mjs';
+import { EXEMPTION_HOLD } from '../server/meal-history.mjs';
 import { createEmptyMenu } from '../../agent/lib/weekly-menu.mjs';
 import { SURVEY_QUESTIONS, SURVEY_VERSION } from '../../agent/lib/survey.mjs';
 
@@ -32,9 +33,12 @@ class MemoryStore {
   async list(collection, limit) { return this.listFrom(this.docs, collection, limit); }
   listFrom(snapshot, collection, limit) {
     this.queries.push({ collection, limit });
-    return [...snapshot].filter(([path]) => path.startsWith(`${collection}/`) && path.split('/').length === collection.split('/').length + 1)
-      .map(([path, value]) => ({ ...clone(value), id: path.slice(collection.length + 1) }))
+    const rows = [...snapshot].filter(([path]) => path.startsWith(`${collection}/`) && path.split('/').length === collection.split('/').length + 1)
+      .map(([path, value]) => ({ id: path.slice(collection.length + 1), data: clone(value) }))
       .sort((a, b) => b.id.localeCompare(a.id)).slice(0, limit);
+    // Like the Firestore adapter, exemption rows keep the document ID beside untouched data.
+    // Unlike it, this double does not filter by email: the service must ignore foreign rows itself.
+    return collection === 'meal_checkin_exemptions' ? rows : rows.map(({ id, data }) => ({ ...data, id }));
   }
   runTransaction(work) {
     const execute = async () => {
@@ -104,9 +108,82 @@ test('snapshot reads real personal documents by linked UID and never scans other
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE_OTHER|PRIVATE_MENU_METADATA/);
   assert.ok(f.store.reads.includes(`meal_taps/${UID}/months/2026-11`));
   assert.ok(f.store.reads.every(path => !path.includes(OTHER) && !path.startsWith('checkins/') && !path.startsWith('staff/')));
-  assert.deepEqual(f.store.queries.map(query => query.collection).sort(), ['events', 'meal_surveys']);
+  assert.deepEqual(f.store.queries.map(query => query.collection).sort(), ['events', 'meal_checkin_exemptions', 'meal_surveys']);
   assert.equal(f.store.writes.length, 0);
   assert.equal(f.state.guardCalls, 2);
+});
+
+// 15:30 VN on 03/11 with a full sync at 14:00: both of today's meals are final.
+const closedToday = { 'settings/checkinSync': { coverage: { '2026-11-03': '2026-11-03T07:00:00Z' } } };
+const exemptionPath = id => `meal_checkin_exemptions/${id}`;
+const exemption = (data = {}) => ({ employeeId: '100001', email: profile.email, fullName: 'PRIVATE_EXEMPTION_NAME',
+  periods: [{ from: '2026-11-01', to: null }], ...data });
+const meals = result => ({ breakfast: result.todayMeals.result.meals.breakfast.code, lunch: result.todayMeals.result.meals.lunch.code });
+
+test('snapshot applies the verified own lunch exemption, keeps breakfast required and returns no policy details', async () => {
+  const f = fixture({ ...closedToday, [regPath('2026-11')]: registration(), [exemptionPath('100001')]: exemption() });
+  const result = await snapshot(f);
+  assert.deepEqual(meals(result), { breakfast: 'missing', lunch: 'exempt' });
+  assert.deepEqual(result.history.days.find(row => row.date === '2026-11-03').result.meals.lunch, { code: 'exempt', time: null });
+  assert.deepEqual(f.store.queries.find(query => query.collection === 'meal_checkin_exemptions'), { collection: 'meal_checkin_exemptions', limit: 21 });
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE_EXEMPTION_NAME|periods/);
+});
+
+test('a broken own exemption returns the snapshot with untapped meals pending, and every write keeps working', async () => {
+  for (const broken of [exemption({ periods: [] }), exemption({ employeeId: 100001 }), exemption({ fullName: 'Hai\ndòng' })]) {
+    const f = fixture({ ...closedToday, [regPath('2026-11')]: registration(), [exemptionPath('100001')]: broken,
+      [`meal_taps/${UID}/months/2026-11`]: { days: { '2026-11-03': ['07:30'] } },
+      'events/open': { name: 'Sự kiện', isOpen: true }, [`meal_surveys/${WEEK}`]: { opensAt: '2026-11-03T00:00:00Z', closesAt: '2026-11-04T00:00:00Z' } });
+    const result = await snapshot(f);
+    assert.deepEqual(meals(result), { breakfast: 'ok', lunch: 'pending' });
+    assert.equal(result.todayMeals.hold, EXEMPTION_HOLD);
+    assert.equal(result.history.days.find(row => row.date === '2026-11-03').hold, EXEMPTION_HOLD);
+    assert.equal(result.registration.lockedReason, 'already_registered');
+    assert.equal(result.survey.allowed, true); assert.equal(result.events[0].allowed, true);
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE_EXEMPTION_NAME|Mã nhân viên|khoảng thời gian/);
+    assert.deepEqual(await f.run('meal.cancel', cancelBody()), { saved: true });
+    assert.deepEqual(await f.run('meal.register', { month: '2026-12', breakfast: false, lunch: true }), { saved: true });
+    assert.deepEqual(await f.run('meal.event', { eventId: 'open', choice: 'yes' }), { saved: true });
+    assert.deepEqual(await f.run('meal.survey', { weekId: WEEK, answers: answers() }), { saved: true });
+  }
+});
+
+test('more own exemption documents than the limit are treated as unknown instead of failing or truncating', async () => {
+  const docs = count => Object.fromEntries(Array.from({ length: count }, (_, index) => {
+    const id = String(100001 + index); return [exemptionPath(id), exemption({ employeeId: id })];
+  }));
+  const full = await snapshot(fixture({ ...closedToday, [regPath('2026-11')]: registration(), ...docs(20) }));
+  assert.deepEqual(meals(full), { breakfast: 'missing', lunch: 'exempt' });
+  assert.equal(full.todayMeals.hold, null);
+  const cut = await snapshot(fixture({ ...closedToday, [regPath('2026-11')]: registration(), ...docs(21) }));
+  assert.deepEqual(meals(cut), { breakfast: 'pending', lunch: 'pending' });
+  assert.equal(cut.todayMeals.hold, EXEMPTION_HOLD);
+});
+
+test('exemption documents of another email never change the snapshot, even when they name the same staff code', async () => {
+  const other = 'other@hoangmaistarschool.edu.vn';
+  const f = fixture({ ...closedToday, [regPath('2026-11')]: registration(), [exemptionPath('100001')]: exemption(),
+    [exemptionPath('broken_other')]: exemption({ email: other, periods: [] }), [exemptionPath('100002')]: exemption({ employeeId: '100002', email: other, fullName: 7 }) });
+  assert.deepEqual(meals(await snapshot(f)), { breakfast: 'missing', lunch: 'exempt' });
+  const foreignOnly = fixture({ ...closedToday, [regPath('2026-11')]: registration(), [exemptionPath('100001')]: exemption({ email: other }) });
+  assert.deepEqual(meals(await snapshot(foreignOnly)), { breakfast: 'missing', lunch: 'missing' });
+});
+
+test('exemption state is decided per registration: only the month registered under a held code stays pending', async () => {
+  const sync = { 'settings/checkinSync': { coverage: { '2026-10-30': '2026-10-30T07:00:00Z', '2026-11-03': '2026-11-03T07:00:00Z' } } };
+  const documents = { ...sync, [regPath('2026-10')]: registration('2026-10', { employeeId: '100009' }), [regPath('2026-11')]: registration(),
+    [exemptionPath('100001')]: exemption() };
+  const october = result => result.history.days.find(row => row.date === '2026-10-30').result.meals;
+  const octoberHold = result => result.history.days.find(row => row.date === '2026-10-30').hold;
+  const known = await snapshot(fixture(documents), '2026-10');
+  assert.deepEqual([october(known).breakfast.code, october(known).lunch.code], ['missing', 'missing']);
+  assert.equal(octoberHold(known), null);
+  const held = await snapshot(fixture({ ...documents, [exemptionPath('100009')]: exemption({ employeeId: '100009', periods: [] }) }), '2026-10');
+  assert.deepEqual([october(held).breakfast.code, october(held).lunch.code], ['pending', 'pending']);
+  assert.equal(octoberHold(held), EXEMPTION_HOLD);
+  // Today belongs to November, registered under the valid code: still concluded.
+  assert.deepEqual(meals(held), { breakfast: 'missing', lunch: 'exempt' });
+  assert.equal(held.todayMeals.hold, null);
 });
 
 test('historical snapshots keep selected-month history and current-day data separate', async () => {

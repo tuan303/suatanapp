@@ -261,6 +261,40 @@ test('a day held by the exemption check says why and keeps concluded meals reada
   assert.equal(occurrences(conflict, 'Chưa thể kết luận đối soát'), 2); assert.doesNotMatch(conflict, /conflict|Thông tin miễn chấm/);
 });
 
+test('a month without registration explains why no tap is listed and whom to contact', () => {
+  const unregisteredDay = date => ({ date, hold: null, result: { date, offDay: false, unrecognized: [], meals: {
+    breakfast: { code: 'not_registered', time: null, reason: 'no_registration' }, lunch: { code: 'not_registered', time: null, reason: 'no_registration' } } } });
+  const view = (month, record, days) => visibleText(renderToStaticMarkup(createElement(app.MealHistory, { data: { month, today: '2026-11-03',
+    registration: { record }, history: { month, days, conflict: false, updatedAt: null, closedFrom: null } } })));
+  const html = view('2026-11', null, [unregisteredDay('2026-11-03'), unregisteredDay('2026-11-02')]);
+  assert.match(html, /Thầy\/Cô không đăng ký suất ăn tháng 11\/2026 nên Mini App không hiển thị lượt chấm của tháng này \(nếu có\)\./);
+  assert.match(html, /Nếu nhận được email cảnh báo chấm ăn khi chưa đăng ký, Thầy\/Cô vui lòng liên hệ Bộ phận Dinh dưỡng để được đối chiếu\./);
+  assert.equal(occurrences(html, 'Không đăng ký'), 4); assert.match(html, /2 ngày/);
+  const record = { month: '2026-10', breakfastCount: 22, lunchCount: 22, firstMealDate: '2026-10-01', timestamp: null };
+  assert.doesNotMatch(view('2026-10', record, [unregisteredDay('2026-10-30')]), /Bộ phận Dinh dưỡng/);
+  // A month that has not started can still be registered: only the usual empty state.
+  const future = view('2026-12', null, []);
+  assert.doesNotMatch(future, /Bộ phận Dinh dưỡng/); assert.match(future, /Chưa có lượt chấm trong tháng/);
+});
+
+test('a month without registration that still lists synced tap times does not claim taps are hidden', () => {
+  const day = (date, breakfast, lunch, unrecognized = []) => ({ date, hold: null, result: { date, offDay: false, unrecognized, meals: {
+    breakfast: breakfast ? { code: 'extra', time: breakfast } : { code: 'not_registered', time: null, reason: 'no_registration' },
+    lunch: lunch ? { code: 'extra', time: lunch } : { code: 'not_registered', time: null, reason: 'no_registration' } } } });
+  const view = days => visibleText(renderToStaticMarkup(createElement(app.MealHistory, { data: { month: '2026-11', today: '2026-11-03',
+    registration: { record: null }, history: { month: '2026-11', days, conflict: false, updatedAt: null, closedFrom: null } } })));
+  // Taps synced before the registration was deleted are still shown with their times.
+  for (const days of [[day('2026-11-03', null, '12:10'), day('2026-11-02')], [day('2026-11-03', '07:05', null)],
+    [day('2026-11-03', null, null, ['15:40'])]]) {
+    const html = view(days);
+    assert.doesNotMatch(html, /không hiển thị lượt chấm|Bộ phận Dinh dưỡng/);
+    assert.match(html, /12:10|07:05|15:40/);
+  }
+  assert.match(view([day('2026-11-03', null, '12:10')]), /12:10<\/strong><small class="">Có chấm, chưa đăng ký<\/small>/);
+  // Without any shown time the explanation stays.
+  assert.match(view([day('2026-11-03'), day('2026-11-02')]), /không hiển thị lượt chấm của tháng này \(nếu có\)/);
+});
+
 test('the build label shown in the app is the one the deployment guide and README tell staff to check', async () => {
   const source = await readFile(new URL('../src/lib/appVersion.ts', import.meta.url), 'utf8');
   const label = /ACCOUNT_LINK_BUILD = '(LIVE-\d{8}\.\d+)'/.exec(source)?.[1];

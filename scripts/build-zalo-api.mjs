@@ -11,11 +11,12 @@ await mkdir(output, { recursive: true });
 await build({ entryPoints: [path.join(root, 'deploy/zalo-api/start.ts')],
   outfile: path.join(output, 'server.cjs'), bundle: true, platform: 'node', format: 'cjs',
   packages: 'external', target: 'node22', sourcemap: false, logLevel: 'warning' });
-const assets = ['package.json', 'package-lock.json', '.env.example', 'Start-Api.ps1', 'Caddyfile'];
+const assets = ['package.json', 'package-lock.json', '.env.example', 'Start-Api.ps1', 'Install-ApiStartup.ps1', 'Set-WebhookKey.ps1', 'Caddyfile', 'web.config'];
 for (const asset of assets) await copyFile(path.join(root, 'deploy/zalo-api', asset), path.join(output, asset));
 await copyFile(path.join(root, 'docs/ZALO_VIETNAM_API.md'), path.join(output, 'README.md'));
 await copyFile(path.join(root, 'docs/ZALO_LIVE_DATA.md'), path.join(output, 'ZALO_LIVE_DATA.md'));
-const files = ['server.cjs', ...assets, 'README.md', 'ZALO_LIVE_DATA.md'];
+await copyFile(path.join(root, 'docs/ZALO_WEBHOOK_SETUP.md'), path.join(output, 'ZALO_WEBHOOK_SETUP.md'));
+const files = ['server.cjs', ...assets, 'README.md', 'ZALO_LIVE_DATA.md', 'ZALO_WEBHOOK_SETUP.md'];
 const sums = await Promise.all(files.map(async name => {
   const bytes = await readFile(path.join(output, name));
   return `${createHash('sha256').update(bytes).digest('hex')}  ${name}`;

@@ -7,6 +7,7 @@
 // Provider bodies are never read on failure: Entra/Graph errors can echo
 // addresses, tenant details or request IDs, and none of that may reach a Mini
 // App user or a log line. Errors carry only a fixed code and an HTTP status.
+import { reportZaloDiagnostic } from './zalo-diagnostics.mjs';
 
 const SCHOOL_ADDRESS = /^[A-Za-z0-9][A-Za-z0-9._%+-]{0,63}@hoangmaistarschool\.edu\.vn$/i;
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -86,8 +87,8 @@ export function inspectZaloMailEnv(env = {}) {
   catch { return { missing: Object.values(ENV), invalid: [] }; }
 }
 
-/** One fixed log line with a fixed code and bounded HTTP status only. */
-export function reportZaloMailFailure(error, report = console.warn) {
+/** One fixed log line with a fixed code and bounded HTTP status only (throttled by default). */
+export function reportZaloMailFailure(error, report = reportZaloDiagnostic) {
   try {
     const own = error instanceof ZaloMailError, code = own ? error.code : undefined, httpStatus = own ? error.httpStatus : undefined;
     const diagnostic = { code: typeof code === 'string' && Object.hasOwn(MESSAGES, code) ? code : 'unknown' };

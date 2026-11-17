@@ -5,6 +5,7 @@
 import express from 'express';
 import type { ErrorRequestHandler, RequestHandler } from 'express';
 import { createZaloHandler } from '../../api/zalo';
+import { createZaloWebhookHandler } from '../../api/zalo-webhook';
 
 export function readZaloApiListenConfig(env: Record<string, string | undefined> = process.env) {
   const host = env.HOST ?? '127.0.0.1';
@@ -16,7 +17,10 @@ export function readZaloApiListenConfig(env: Record<string, string | undefined> 
   return { host, port: Number(port) };
 }
 
-export function createZaloApiApp({ handler }: { handler?: RequestHandler } = {}) {
+export function createZaloApiApp({ handler, webhookHandler }: {
+  handler?: RequestHandler;
+  webhookHandler?: RequestHandler;
+} = {}) {
   // This process performs verification locally. A Vercel forwarding variable
   // accidentally copied into its environment must never create a proxy loop.
   const localHandler = handler ?? createZaloHandler({
@@ -34,6 +38,10 @@ export function createZaloApiApp({ handler }: { handler?: RequestHandler } = {})
   // Liveness only. This does not prove Zalo connectivity or reveal configuration.
   app.get('/healthz', (_req, res) => { res.status(200).json({ status: 'ok' }); });
   app.all('/api/zalo', express.json({ limit: 8192, strict: true, inflate: false }), localHandler);
+  // Zalo's signed consent-withdrawal callback (user.revoke.consent). It is
+  // registered with Zalo as https://api-suatan.nshm.vn/api/zalo-webhook.
+  app.all('/api/zalo-webhook', express.json({ limit: 8192, strict: true, inflate: false }),
+    webhookHandler ?? createZaloWebhookHandler());
   app.use((_req, res) => {
     res.status(404).json({ error: { code: 'not_found', message: 'Không tìm thấy địa chỉ API.' } });
   });

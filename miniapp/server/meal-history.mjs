@@ -1,7 +1,16 @@
 // Pure personal-history projection. Callers supply only the linked user's
 // registration, cancellations and meal_taps document; never all-school taps.
 import { isIsoDate } from '../../agent/lib/common.mjs';
-import { evaluatePersonDay, mealDaysOfMonth, vnParts } from '../../agent/lib/meal-rules.mjs';
+import { createCheckinExemptionMatcher, exemptionQuarantine, normalizeExemptionEmployeeId, parseCheckinExemptionDocs } from '../../agent/lib/checkin-exemptions.mjs';
+import { MEALS, evaluatePersonDay, mealDaysOfMonth, vnParts } from '../../agent/lib/meal-rules.mjs';
+
+/**
+ * `hold` của ngày có bữa chưa kết luận được vì hồ sơ miễn chấm của chính người
+ * này đang lỗi. Là chữ tự do (≤ 80 ký tự, không ký tự điều khiển) chứ không phải
+ * mã: parser của Mini App LIVE-20261103.1 lẫn bản mới đều nhận và coi là ngày chưa
+ * kết luận; bản mới hiện thêm câu này dưới ngày đó.
+ */
+export const EXEMPTION_HOLD = 'Thông tin miễn chấm đang được kiểm tra';
 
 const MONTH = /^\d{4}-(?:0[1-9]|1[0-2])$/;
 const TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -30,18 +39,46 @@ function ownRegistration(value, month) {
     lunchCount: count(value.lunchCount),
   };
   if (typeof value.userId === 'string' && UID.test(value.userId)) result.userId = value.userId;
+  if (typeof value.email === 'string') result.email = value.email.trim().toLowerCase();
   if (isIsoDate(value.firstMealDate)) result.firstMealDate = value.firstMealDate;
   const at = timestamp(value.timestamp);
   if (at) result.timestamp = at;
   return result;
 }
 
+const unknownExemptions = () => ({ matcher: createCheckinExemptionMatcher([]), unknown: true });
+
+/**
+ * Miễn chấm của chính người này, từ tài liệu `meal_checkin_exemptions` dạng
+ * `{ id, data }` (null = không đọc được đủ danh sách). Chỉ tài liệu mang đúng
+ * email đã xác minh được xét, và xét chặt TỪNG tài liệu như agent. Không bao giờ
+ * ném lỗi vì dữ liệu: tài liệu hỏng nêu mã NV trên đơn tháng này (hoặc không rõ
+ * mã nào) thì chưa biết người này có được miễn hay không — `unknown`: bỏ mọi
+ * miễn chấm và không chốt các bữa đã đăng ký mà chưa chấm (ngày đó mang
+ * `EXEMPTION_HOLD`), thay vì báo lỗi cả ảnh chụp dữ liệu hoặc kết luận "chưa
+ * chấm" khi có thể đang được miễn.
+ * Tài liệu hỏng của mã khác chỉ giữ mã đó, giống cách agent cách ly theo mã.
+ */
+function personalExemptions(docs, email, employeeId) {
+  if (!Array.isArray(docs) || !docs.every(doc => record(doc) && typeof doc.id === 'string'
+    && !!doc.data && typeof doc.data === 'object')) return unknownExemptions();
+  const address = typeof email === 'string' ? email.trim().toLowerCase() : '';
+  const { policies, invalid } = parseCheckinExemptionDocs(docs.filter(doc => !!address && doc.data.email === address));
+  const quarantine = exemptionQuarantine(invalid);
+  if (quarantine.unidentified > 0 || quarantine.ids.has(normalizeExemptionEmployeeId(employeeId))) return unknownExemptions();
+  // Chính sách đã qua kiểm tra chặt; chặn thêm để dữ liệu miễn chấm không bao giờ thành lỗi 503.
+  try { return { matcher: createCheckinExemptionMatcher(policies), unknown: false }; }
+  catch { return unknownExemptions(); }
+}
+
 /**
  * Personal history using the same meal decisions as the web and HAC agent.
  * No implicit clock, Firebase access, identity lookup or untrusted metadata is
  * exposed. The caller authorizes ownership before supplying these documents.
+ * `checkinExemptionDocs` are the stored exemption documents read by the
+ * verified `email` (`{ id, data }`); `null` means the list is incomplete.
  */
-export function buildPersonalMealHistory({ month, today, now, registration, tapsDoc, cancelations = [], sync, offDays = [], excludedIds = [] }) {
+export function buildPersonalMealHistory({ month, today, now, registration, tapsDoc, cancelations = [], sync, offDays = [], excludedIds = [], checkinExemptionDocs = [], email }) {
   if (typeof month !== 'string' || !MONTH.test(month) || Number(month.slice(0, 4)) < 100 || !isIsoDate(`${month}-01`))
     throw new TypeError('Invalid history month');
   if (!isIsoDate(today)) throw new TypeError('Invalid history date');
@@ -76,6 +113,7 @@ export function buildPersonalMealHistory({ month, today, now, registration, taps
   const off = Array.isArray(offDays) ? [...new Set(offDays.filter(isIsoDate))] : [];
   const excludes = Array.isArray(excludedIds) ? excludedIds.filter(id => typeof id === 'string' && id.length <= 40) : [];
   const reg = ownRegistration(registration, month);
+  const exemptions = personalExemptions(checkinExemptionDocs, email, reg?.employeeId);
   const cancels = Array.isArray(cancelations) ? cancelations.flatMap(cancel => {
     if (!record(cancel) || !isIsoDate(cancel.cancelDate) || !cancel.cancelDate.startsWith(`${month}-`)
       || !['breakfast', 'lunch', 'both'].includes(cancel.cancelMeal)
@@ -90,12 +128,18 @@ export function buildPersonalMealHistory({ month, today, now, registration, taps
     const hold = conflict && (!conflictFrom || date >= conflictFrom) ? 'conflict'
       : record(held[date]) && held[date].held === true ? 'guarded'
         : !coverage[date] && closedFrom && date < closedFrom ? 'expired' : null;
+    // Miễn chấm chưa rõ thì cũng không chốt: bữa đã đăng ký mà chưa chấm giữ trạng thái chờ.
     const result = evaluatePersonDay({ date, registration: reg, cancelations: cancels,
       times: taps[date] || [], offDays: off, excludedIds: excludes,
-      coverageAt: hold === 'conflict' || hold === 'guarded' ? null : coverage[date] || null, now: clock });
+      checkinExemptionMatcher: exemptions.matcher, email,
+      coverageAt: hold === 'conflict' || hold === 'guarded' || exemptions.unknown ? null : coverage[date] || null, now: clock });
+    // Ngày có bữa còn chờ vì miễn chấm chưa rõ nói rõ lý do, để không đọc thành "đang
+    // chờ đồng bộ". Bữa đã chấm, không đăng ký... không phụ thuộc miễn chấm: ngày chỉ
+    // có các bữa đó không bị giữ. Mã giữ ngày có sẵn được ưu tiên.
+    const reason = hold ?? (exemptions.unknown && MEALS.some(meal => result.meals[meal].code === 'pending') ? EXEMPTION_HOLD : null);
     // Bound display-only outside-window details after every tap has contributed
     // to meal classification, so truncation cannot create a false missing meal.
-    return { date, hold, result: { ...result, unrecognized: result.unrecognized.slice(0, 20),
+    return { date, hold: reason, result: { ...result, unrecognized: result.unrecognized.slice(0, 20),
       unrecognizedCount: result.unrecognized.length } };
   }) };
 }

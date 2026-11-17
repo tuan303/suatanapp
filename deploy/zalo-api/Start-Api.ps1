@@ -1,3 +1,7 @@
+# Manual/legacy launcher: runs the API in this window, logging to logs\api.log.
+# On the VPS the API runs as the 'DKAN - Zalo API' task that
+# Install-ApiStartup.ps1 registers. Stop that task first
+# (Install-ApiStartup.ps1 -Stop): both use port 3031.
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 $taskNode = (Get-Command node.exe -ErrorAction Stop).Source

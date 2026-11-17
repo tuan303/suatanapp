@@ -7,7 +7,7 @@ Mã nguồn phần mềm đăng ký suất ăn của nhà trường, kèm bản 
 | Thư mục | Nội dung |
 | --- | --- |
 | `src/` | Website đăng ký ăn, quản trị và trang liên kết tài khoản `/lien-ket-zalo` |
-| `api/` | API email và API liên kết Zalo `/api/zalo` chạy phía máy chủ |
+| `api/` | API email, API liên kết Zalo `/api/zalo` và webhook thu hồi quyền Zalo `/api/zalo-webhook` chạy phía máy chủ |
 | `miniapp/` | Giao diện Zalo Mini App, kiểm thử và mã xác thực/liên kết tài khoản dùng chung với API |
 | `agent/` | Agent đồng bộ lượt chấm ăn từ thiết bị HAC và gửi thông báo theo lịch |
 | `tests/` | Kiểm thử của website và API |
@@ -18,10 +18,12 @@ Mã nguồn phần mềm đăng ký suất ăn của nhà trường, kèm bản 
 - Zalo App ID cha: `928403133949225802`.
 - Đã có mã xác minh danh tính Zalo phía server, liên kết với tài khoản nhà trường, phiên API cá nhân và hủy liên kết.
 - Liên kết Microsoft/Zalo đã được kiểm tra thành công trên điện thoại. API công khai ở `https://suatanapp.vercel.app` chuyển tiếp tới máy chủ Việt Nam `api-suatan.nshm.vn`.
-- Bản `LIVE-20261103.1` đã có API dữ liệu thật cho đăng ký tháng, hủy ăn, sự kiện, thực đơn, chấm ăn cá nhân và khảo sát. Mã nghiệp vụ dùng chung dữ liệu với website; cần cập nhật API trên VPS và deploy lại Mini App để sử dụng bản này.
+- Từ bản `LIVE-20261103.1`, Mini App dùng API dữ liệu thật cho đăng ký tháng, hủy ăn, sự kiện, thực đơn, chấm ăn cá nhân và khảo sát, chung dữ liệu với website. Bản `LIVE-20261106.1` thêm hiển thị **Miễn chấm ăn**. Bản `LIVE-20261116.1` cập nhật cách hiển thị trạng thái liên kết và chỉ cần triển khai lại Mini App. [Hướng dẫn triển khai](docs/ZALO_LIVE_DATA.md)
 - Bản `LIVE-20261116.2` hỗ trợ liên kết bằng nút mở trong Zalo hoặc quét QR từ website.
-- Bản `LIVE-20261117.1` (đang chuẩn bị): CBGV-NV liên kết ngay trong Mini App — nhập email trường, nhập mã 6 số gửi về hộp thư là xong; các lần mở sau tự đăng nhập. Đường website/QR vẫn giữ làm cách thay thế. Cần cập nhật VPS (`server.cjs` + `MS_GRAPH_*`), Vercel rồi Mini App theo [hướng dẫn API Việt Nam](docs/ZALO_VIETNAM_API.md). [Hướng dẫn kiểm thử trên điện thoại](docs/ZALO_DEVICE_TEST.md)
-- Xem [hướng dẫn chuyển sang dữ liệu thật](docs/ZALO_LIVE_DATA.md). Việc kiểm thử ngoại tuyến và build thành công không thay thế kiểm tra trên Zalo sau khi triển khai.
+- Bản `LIVE-20261116.3` mở trang xác minh Microsoft bằng WebView của Zalo và hiển thị địa chỉ để mở bằng Chrome hoặc Safari. Từ bản `LIVE-20261117.1`, nút mở trang và nút **Sao chép địa chỉ** nằm trong mục **Cách khác: liên kết qua website**; đường chính là mã gửi qua email trường.
+- Bản `LIVE-20261117.1` (đang chuẩn bị): CBGV-NV liên kết ngay trong Mini App — nhập email trường, nhập mã 6 số gửi về hộp thư là xong; các lần mở sau tự đăng nhập. Đường website/QR vẫn giữ làm cách thay thế. API áp dụng danh sách **Miễn chấm ăn theo bữa** do website DKAN quản lý ([chi tiết](docs/MEAL_CHECKIN_EXEMPTIONS.md)) và Mini App giải thích vì sao tháng không đăng ký không có lượt chấm. Cần cập nhật VPS (`server.cjs` + `MS_GRAPH_*`, chạy lại `Install-ApiStartup.ps1`), Vercel rồi Mini App theo [hướng dẫn API Việt Nam](docs/ZALO_VIETNAM_API.md). [Hướng dẫn kiểm thử trên điện thoại](docs/ZALO_DEVICE_TEST.md)
+- Webhook thu hồi quyền của Zalo (`user.revoke.consent`) chạy trên VPS tại `https://api-suatan.nshm.vn/api/zalo-webhook`: [hướng dẫn webhook](docs/ZALO_WEBHOOK_SETUP.md).
+- Việc kiểm thử ngoại tuyến và build thành công không thay thế kiểm tra trên Zalo sau khi triển khai.
 
 Đọc [hướng dẫn Mini App](miniapp/README.md) để cấu hình và chạy thử. Lần đầu, Thầy/Cô xác minh quyền dùng hộp thư trường bằng mã gửi qua email để liên kết đúng hồ sơ (điều kiện: đã đăng nhập website suất ăn bằng Microsoft ít nhất một lần); các lần đăng nhập Mini App sau dùng danh tính Zalo đã liên kết.
 
@@ -54,7 +56,7 @@ Bản mẫu chạy tại `http://127.0.0.1:4930`. Dừng các phiên dev/preview
 
 Website/API dùng thư mục gốc của repository, lệnh build `npm run build`, thư mục đầu ra `dist`. Zalo Mini App có lệnh build riêng trong `miniapp`: `npm run build`, đầu ra `www`; không dùng `www` làm đầu ra của website trường.
 
-Cấu hình các biến trong `.env.example` trên máy chủ/Vercel. Để thử liên kết thật cần `ZALO_APP_ID`, `ZALO_MINI_APP_ID`, `ZALO_APP_SECRET_KEY`, `FIREBASE_ADMIN_CREDENTIALS_JSON` của project Firebase `dkan-4b061` và `DKAN_ZALO_ENABLED=true`; giữ cờ tắt trong lúc chuẩn bị. Liên kết bằng mã email cần thêm bốn biến `MS_GRAPH_*` trên máy chủ chạy API Zalo (VPS Việt Nam), cùng app Entra gửi thư của trường, và service account Firebase được cập nhật người dùng Auth. Sau khi đổi biến môi trường cần triển khai lại.
+Cấu hình các biến trong `.env.example` trên máy chủ/Vercel. Để thử liên kết thật cần `ZALO_APP_ID`, `ZALO_MINI_APP_ID`, `ZALO_APP_SECRET_KEY`, `FIREBASE_ADMIN_CREDENTIALS_JSON` của project Firebase `dkan-4b061` và `DKAN_ZALO_ENABLED=true`; giữ cờ tắt trong lúc chuẩn bị. Liên kết bằng mã email cần thêm bốn biến `MS_GRAPH_*` trên máy chủ chạy API Zalo (VPS Việt Nam), cùng app Entra gửi thư của trường, và service account Firebase được cập nhật người dùng Auth. Webhook thu hồi quyền cần thêm `ZALO_MINI_APP_API_KEY` (Open API Key của Zalo App cha), chỉ đặt trong `.env` của VPS; Vercel không cần biến này. Sau khi đổi biến môi trường cần triển khai lại.
 
 API sản xuất cho phép hai website cố định `https://dkan.nshm.vn`, `https://suatanapp.vercel.app` và Mini App origin `https://h5.zdn.vn`. Mini App dùng `VITE_DKAN_API_ORIGIN=https://suatanapp.vercel.app`; trang liên kết/hủy liên kết qua website thuộc cùng origin API tại `/lien-ket-zalo`. Không cho phép mọi tên miền `*.vercel.app` hoặc các URL preview. Website DKAN hiện có tiếp tục dùng tên miền trường.
 
@@ -81,5 +83,3 @@ npm run build
 ```
 
 Các kiểm thử Zalo sử dụng danh tính, token, dịch vụ gửi thư và dữ liệu giả lập; không gửi email hoặc ghi dữ liệu vận hành. `test-email.cjs` là công cụ gửi thư thật thủ công, không thuộc lệnh `npm test`.
-
-- Bản `LIVE-20261116.3` mở trang xác minh Microsoft bằng WebView của Zalo và hiển thị địa chỉ để mở bằng Chrome hoặc Safari. Từ bản `LIVE-20261117.1`, nút mở trang và nút **Sao chép địa chỉ** nằm trong mục **Cách khác: liên kết qua website**; đường chính là mã gửi qua email trường.

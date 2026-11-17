@@ -15,6 +15,13 @@ const strings = value => Array.isArray(value) ? value.filter(item => typeof item
 const realMonth = value => typeof value === 'string' && /^\d{4}-(?:0[1-9]|1[0-2])$/.test(value) && isIsoDate(`${value}-01`);
 const eventId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 
+/**
+ * Most `meal_checkin_exemptions` documents one verified email may carry (normally
+ * 0–1). The snapshot reads one more: a fuller list may have been cut off and is
+ * never used to conclude a missed or exempt meal.
+ */
+export const OWN_EXEMPTION_LIMIT = 20;
+
 /** Admin datetime-local values are Vietnam wall time, regardless of the VPS timezone. */
 export function mealDeadlineMillis(value) {
   if (typeof value === 'string') {
@@ -103,12 +110,14 @@ export function createMealBusinessService({ store, now = Date.now } = {}) {
     return store.runTransaction(async tx => {
       await privateGuard(identity, tx);
       const uid = identity.uid, currentMonth = today.slice(0, 7);
-      const [monthly, expiry, cancelConfig, sync, off, excluded, blocked, registration, tapsDoc, rawMenu, eventRows, surveyRows] = await Promise.all([
+      const [monthly, expiry, cancelConfig, sync, off, excluded, blocked, registration, tapsDoc, rawMenu, eventRows, surveyRows, exemptionRows] = await Promise.all([
         tx.get('settings/monthlyConfig'), tx.get('settings/monthlyExpiry'), tx.get('settings/cancelConfig'),
         tx.get('settings/checkinSync'), tx.get('settings/mealOffDays'), tx.get('settings/reconcileExcludes'),
         tx.get(`blocked_users/${month}`), tx.get(`registrations/${uid}_${month}`),
         tx.get(`meal_taps/${uid}/months/${month}`), tx.get(`weekly_menus/${weekId}`),
         tx.list('events', 20), tx.list('meal_surveys', 12),
+        // `{ id, data }` of the verified email only; one extra row reveals a cut-off list.
+        tx.list('meal_checkin_exemptions', OWN_EXEMPTION_LIMIT + 1),
       ]);
       owned(registration, uid);
       const cancelDates = [...new Set([...monthDates(month), ...monthDates(currentMonth)])];
@@ -125,7 +134,12 @@ export function createMealBusinessService({ store, now = Date.now } = {}) {
       const at = clock(), fresh = context(at);
       if (fresh.today !== today) fail('service_unavailable'); // A midnight rollover needs a fresh snapshot.
       const offDays = strings(off?.dates).filter(isIsoDate);
-      const historyArgs = { today, now: new Date(at), cancelations: cancels, sync, offDays, excludedIds: strings(excluded?.employeeIds) };
+      // Broken or cut-off exemption data never fails the snapshot: the history keeps the
+      // affected registered, untapped meals pending and says why in the day's `hold`
+      // (EXEMPTION_HOLD, read by old and new clients). null = incomplete list.
+      const checkinExemptionDocs = Array.isArray(exemptionRows) && exemptionRows.length <= OWN_EXEMPTION_LIMIT ? exemptionRows : null;
+      const historyArgs = { today, now: new Date(at), cancelations: cancels, sync, offDays,
+        excludedIds: strings(excluded?.employeeIds), checkinExemptionDocs, email: identity.profile.email };
       const history = buildPersonalMealHistory({ ...historyArgs, month, registration, tapsDoc });
       const todayHistory = month === currentMonth ? history : buildPersonalMealHistory({ ...historyArgs, month: currentMonth, registration: currentRegistration, tapsDoc: currentTaps });
       const cutoff = earliestCancellation(today, at, cancelConfig);

@@ -6,9 +6,9 @@ Zalo App ID cha đã được chủ dự án đính chính và xác nhận: **92
 
 ## Trạng thái hiện tại
 
-Liên kết Microsoft/Zalo đã được kiểm tra thành công trên điện thoại. Bản `LIVE-20261103.1` chuyển các màn hình nghiệp vụ sang API dữ liệu thật, cùng Firebase `dkan-4b061` với website. Không hiển thị dữ liệu mẫu khi mất mạng hoặc API chưa cập nhật. Cần cập nhật cả API trên VPS và bản Mini App trong Zalo theo [hướng dẫn triển khai dữ liệu thật](../docs/ZALO_LIVE_DATA.md).
+Liên kết Microsoft/Zalo đã được kiểm tra thành công trên điện thoại. Bản `LIVE-20261103.1` chuyển các màn hình nghiệp vụ sang API dữ liệu thật, cùng Firebase `dkan-4b061` với website. Bản `LIVE-20261106.1` bổ sung hiển thị **Miễn chấm ăn** và **Chưa xác định** trong kết quả chấm ăn. Bản `LIVE-20261116.1` lấy trạng thái hết hạn của yêu cầu liên kết từ máy chủ và cho phép kiểm tra lại tài khoản khi bước mở phiên gặp lỗi sau xác nhận. Không hiển thị dữ liệu mẫu khi mất mạng hoặc API chưa cập nhật. Cần cập nhật cả API trên VPS và bản Mini App trong Zalo theo [hướng dẫn triển khai dữ liệu thật](../docs/ZALO_LIVE_DATA.md).
 
-Bản `LIVE-20261117.1` (đang chuẩn bị) rút gọn liên kết lần đầu còn **email → mã 6 số → xong**, ngay trong Mini App; Zalo đã liên kết tự đăng nhập khi mở. Cần cập nhật VPS, Vercel rồi Mini App theo mục *Cập nhật LIVE-20261117.1* của [hướng dẫn API Việt Nam](../docs/ZALO_VIETNAM_API.md).
+Bản `LIVE-20261117.1` (đang chuẩn bị) rút gọn liên kết lần đầu còn **email → mã 6 số → xong**, ngay trong Mini App; Zalo đã liên kết tự đăng nhập khi mở. Cùng bản này, API áp dụng danh sách **Miễn chấm ăn theo bữa** do website DKAN quản lý ([chi tiết](../docs/MEAL_CHECKIN_EXEMPTIONS.md)), mục Cá nhân giải thích vì sao tháng không đăng ký không có lượt chấm, và gói API trên VPS giữ webhook thu hồi quyền của Zalo ([hướng dẫn webhook](../docs/ZALO_WEBHOOK_SETUP.md)). Cần cập nhật VPS, Vercel rồi Mini App theo mục *Cập nhật LIVE-20261117.1* của [hướng dẫn API Việt Nam](../docs/ZALO_VIETNAM_API.md).
 
 | Thành phần | Trạng thái |
 | --- | --- |
@@ -21,7 +21,7 @@ Bản `LIVE-20261117.1` (đang chuẩn bị) rút gọn liên kết lần đầu
 | Kiểm thử nghiệp vụ trên điện thoại | Thực hiện sau khi cập nhật hai thành phần |
 | Phát hành Zalo cho toàn trường | Thực hiện sau kiểm thử và quy trình duyệt của Zalo |
 
-Ứng dụng web DKAN, Agent HAC và cơ chế email hiện hành vẫn là hệ thống đang vận hành. Bộ khung này nằm trong thư mục riêng; không yêu cầu cập nhật Agent.
+Ứng dụng web DKAN, Agent HAC và cơ chế email hiện hành vẫn là hệ thống đang vận hành. Bộ khung này nằm trong thư mục riêng; Mini App không yêu cầu cập nhật Agent. Riêng email cảnh báo thiếu chấm chỉ bỏ qua người được miễn khi Agent trên máy HAC chạy bản 2026-11-06.1 trở lên, cài từ bản DKAN (Agent trong kho này vẫn là bản 2026-10-09.1, chưa áp dụng miễn chấm khi gửi cảnh báo).
 
 ## Chạy giao diện trên máy tính
 
@@ -84,7 +84,7 @@ Luồng chính từ `LIVE-20261117.1` — liên kết bằng mã email, **chưa 
 
 Cách thay thế (từ `LIVE-20261116.2`, vẫn chạy): mở `/lien-ket-zalo`, đăng nhập Microsoft, chọn **Bắt đầu liên kết** rồi **Mở trong Zalo** hoặc quét QR. Mini App chỉ hiện **Tiếp tục liên kết** khi được mở từ liên kết đó; quay lại đúng tab website để xác nhận trong 5 phút. Trang vẫn có mã thủ công cho thiết bị không mở được liên kết trực tiếp, và là nơi hủy liên kết. [Kiểm thử trên thiết bị](../docs/ZALO_DEVICE_TEST.md)
 
-`server/verify-zalo-identity.mjs` xác minh danh tính Zalo. `server/account-links.mjs` quản lý mã email, mã một lần của website, phiên cá nhân 8 giờ và thu hồi liên kết. `api/zalo.ts` là RPC giới hạn thao tác; `api/_lib/zalo-runtime.mjs` xác minh Microsoft và kết nối Firebase Admin; `api/_lib/zalo-mail.mjs` gửi thư mã qua Microsoft Graph. Không import các module server vào mã client.
+`server/verify-zalo-identity.mjs` xác minh danh tính Zalo. `server/account-links.mjs` quản lý mã email, mã một lần của website, phiên cá nhân 8 giờ và thu hồi liên kết. `api/zalo.ts` là RPC giới hạn thao tác; `api/_lib/zalo-runtime.mjs` xác minh Microsoft và kết nối Firebase Admin; `api/_lib/zalo-mail.mjs` gửi thư mã qua Microsoft Graph. `server/zalo-withdrawal.mjs` xử lý sự kiện thu hồi quyền `user.revoke.consent` do Zalo gửi tới `api/zalo-webhook.ts` (chữ ký `X-ZEvent-Signature`): xóa liên kết, dọn phiên/mã đang chờ của Zalo đó và chặn liên kết lại bằng mã tạo trước mốc thu hồi ([hướng dẫn webhook](../docs/ZALO_WEBHOOK_SETUP.md)). Không import các module server vào mã client.
 
 ## Cấu hình để thử liên kết thật
 
@@ -98,6 +98,7 @@ Giữ `DKAN_ZALO_ENABLED=false` trong lúc chuẩn bị. Cấu hình các biến
 | `FIREBASE_ADMIN_CREDENTIALS_JSON` | JSON service account của project `dkan-4b061`, chỉ lưu ở server |
 | `DKAN_ZALO_ENABLED` | `true` khi đã chuẩn bị tài khoản thử nghiệm và sẵn sàng kiểm tra |
 | `MS_GRAPH_TENANT_ID`, `MS_GRAPH_CLIENT_ID`, `MS_GRAPH_CLIENT_SECRET`, `MS_GRAPH_SENDER` | Gửi thư mã xác minh; cùng app Entra gửi thư của trường (quyền Application `Mail.Send`), hộp thư gửi `@hoangmaistarschool.edu.vn`. Đặt trên máy chủ chạy API Zalo (VPS); thiếu thì chỉ liên kết bằng email báo `email_link_unavailable` |
+| `ZALO_MINI_APP_API_KEY` | Open API Key của Zalo App cha, xác minh webhook thu hồi quyền. Chỉ đặt trong `.env` của VPS (nhập bằng `Set-WebhookKey.ps1`); không cần trên Vercel |
 
 Service account trong `FIREBASE_ADMIN_CREDENTIALS_JSON` phải đọc và cập nhật được người dùng Firebase Auth (đặt `emailVerified`). Khóa băm mã suy ra từ `ZALO_APP_SECRET_KEY`, không có biến bí mật riêng.
 
@@ -105,7 +106,7 @@ Service account trong `FIREBASE_ADMIN_CREDENTIALS_JSON` phải đọc và cập 
 
 Để thử đăng nhập Microsoft trên website mới, quản trị cần kiểm tra `suatanapp.vercel.app` trong Firebase Authentication → Settings → Authorized domains. Quyền trường, mã email, mã một lần, xác nhận trên web và thu hồi phiên vẫn được kiểm tra tại server.
 
-Mặc định API trả 503 khi chưa bật/thiếu cấu hình. Các collections `zalo_link_*`, `zalo_links` chỉ được truy cập bằng server; rules hiện tại không cho client đọc/ghi chúng. Phiên Mini App không phải Firebase token và không kế thừa vai trò quản trị.
+Mặc định API trả 503 khi chưa bật/thiếu cấu hình. Các collections `zalo_link_*` (gồm mốc thu hồi `zalo_link_revocations`), `zalo_links`, `zalo_webhook_events` chỉ được truy cập bằng server; rules hiện tại không cho client đọc/ghi chúng. Phiên Mini App không phải Firebase token và không kế thừa vai trò quản trị.
 
 ## Quy tắc hiện có cần giữ
 
@@ -113,6 +114,8 @@ Mặc định API trả 503 khi chưa bật/thiếu cấu hình. Các collection
 - Giữ lựa chọn ăn sáng đồng thời đăng ký bữa trưa như luồng web hiện tại; không tự thay cách tính suất tháng khi chuyển nền tảng.
 - Ngày nghỉ/ăn sự kiện vẫn tách khỏi suất tháng; dữ liệu thực tế được tra cứu theo nghiệp vụ tương ứng.
 - Lượt chấm chưa đủ dữ liệu không bị kết luận là quên chấm. Khảo sát và sự kiện giữ đúng hạn, quyền và giới hạn hiện hành.
+- Miễn chấm ăn chỉ áp dụng khi mã NV trên đơn và email tài khoản đã xác minh cùng khớp danh sách quản trị; hồ sơ được kiểm tra chặt như DKAN Agent. Hồ sơ hỏng không làm hỏng dữ liệu cả màn hình: các bữa đã đăng ký mà chưa chấm của tháng liên quan chưa được kết luận, ngày đó ghi rõ thông tin miễn chấm đang được kiểm tra.
+- Tháng không đăng ký không có lượt chấm để hiện (agent chỉ tách lượt chấm cho người có đơn); Mini App nói rõ điều này như trang "Chấm ăn của tôi" trên website.
 - Đăng ký/hủy phải kiểm tra quy tắc ở backend, không chỉ khóa nút trên UI.
 
 ## Các bước còn lại để vận hành
@@ -134,6 +137,6 @@ Tài liệu tham chiếu đã kiểm tra ngày 30/10/2026:
 
 Kiểm thử tự động dùng dữ liệu, Zalo Graph và dịch vụ gửi thư giả lập; không gửi email, tạo đơn thử trên Firebase thật hoặc tự xác nhận liên kết. Luồng liên kết đã được chủ tài khoản kiểm tra trên thiết bị thật ngày 03/11/2026. Các nghiệp vụ mới cần đối chiếu lại sau khi triển khai.
 
-Chạy `npm test`, `npm run typecheck`, `npm run build` trong thư mục `miniapp`. Kiểm thử bao phủ phiên, quyền chính chủ, cấu trúc snapshot, giao dịch ghi, hạn theo giờ Việt Nam và quy tắc chấm ăn dùng chung. Giao diện chỉ báo đã lưu sau phản hồi thành công, xóa dữ liệu khi hết phiên và không thay API lỗi bằng dữ liệu mẫu.
+Chạy `npm test`, `npm run typecheck`, `npm run build` trong thư mục `miniapp`. Kiểm thử bao phủ phiên, quyền chính chủ, cấu trúc snapshot, giao dịch ghi, hạn theo giờ Việt Nam, quy tắc chấm ăn dùng chung, hồ sơ miễn chấm hỏng hoặc vượt giới hạn và webhook thu hồi quyền. Kiểm thử cũng dùng bản sao parser của `LIVE-20261103.1` để bảo đảm snapshot mới vẫn đọc được; riêng bữa **Miễn chấm ăn** thì bản đó không đọc được (các bản từ `LIVE-20261106.1`, gồm bản đang chạy, đều đọc được). Giao diện chỉ báo đã lưu sau phản hồi thành công, xóa dữ liệu khi hết phiên và không thay API lỗi bằng dữ liệu mẫu.
 
 Bản `LIVE-20261116.3` mở trang xác minh qua WebView của Zalo và hiển thị nút **Sao chép địa chỉ** để có thể đăng nhập trong Chrome hoặc Safari. Từ `LIVE-20261117.1`, nút mở trang và nút **Sao chép địa chỉ** nằm trong mục **Cách khác: liên kết qua website** (dưới bước nhập email), cùng ô nhập mã liên kết của website.

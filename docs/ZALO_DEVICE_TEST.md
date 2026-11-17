@@ -70,6 +70,9 @@ Thử trên cả Android và iOS. Chỉ dùng tài khoản đã được đồng
 | 15 | Đường website/QR | Làm theo mục *Liên kết qua website* bên dưới | Vẫn liên kết được như bản `LIVE-20261116.2` |
 | 16 | Mất kết quả khi gửi mã | Bấm **Gửi mã xác minh** rồi tắt mạng ngay; bật lại mạng, bấm gửi lại trong 1 phút | Mở bước nhập mã, không có thư thứ hai; mã trong thư đầu tiên dùng được |
 | 17 | Dán mã | Ở bước nhập mã gõ trước vài số, rồi dán `123 456` hoặc cả dòng tiêu đề thư | Ô mã thay bằng đúng 6 số vừa dán (không ghép với số đã gõ) và tự xác minh |
+| 18 | Tháng không đăng ký | Mục **Cá nhân**, chọn một tháng đã bắt đầu mà tài khoản không có đơn | Có dòng "Thầy/Cô không đăng ký suất ăn tháng … nên Mini App không hiển thị lượt chấm của tháng này (nếu có)" kèm hướng dẫn liên hệ Bộ phận Dinh dưỡng; tháng có đơn hoặc tháng chưa bắt đầu không có dòng này |
+| 19 | Miễn chấm ăn | Tài khoản có trong danh sách **Miễn chấm theo bữa** của website (chỉ dùng tài khoản đã có sẵn trong danh sách, không thêm người để thử) | Bữa đã đăng ký mà chưa chấm trong thời gian được miễn hiện **Miễn chấm ăn**; bữa không được miễn vẫn hiện trạng thái chấm như thường; khớp trang "Chấm ăn của tôi" trên website DKAN (bản có Miễn chấm theo bữa). Trang `/cham-an` của `suatanapp.vercel.app` chưa áp dụng miễn chấm, bữa đó vẫn hiện như chưa chấm: không coi là lỗi |
+| 20 | Thu hồi quyền trong Zalo | Chỉ với tài khoản thử nghiệm được chủ tài khoản đồng ý: thu hồi quyền/xóa dữ liệu Mini App trong cài đặt Zalo, rồi mở lại Mini App | Không tự đăng nhập vào tài khoản cũ; về bước nhập email; mã gửi trước lúc thu hồi không dùng được, mã mới gửi sau đó liên kết lại được. Cần webhook đang chạy trên VPS ([hướng dẫn webhook](ZALO_WEBHOOK_SETUP.md)) |
 
 ### Lỗi phía máy chủ khi gửi/nhập mã
 

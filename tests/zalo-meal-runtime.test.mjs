@@ -21,7 +21,14 @@ class FakeFirestore {
   doc(path) { this.native.push(['doc', path]); return { kind: 'doc', path }; }
   collection(name) {
     this.native.push(['collection', name]);
-    return { orderBy: (field, direction) => {
+    return { where: (field, operator, value) => {
+      assert.equal(operator, '==');
+      this.native.push(['where', name, field, value]);
+      return { limit: count => {
+        this.native.push(['limit', name, count]);
+        return { kind: 'query', name, filterField: field, filterValue: value, count };
+      } };
+    }, orderBy: (field, direction) => {
       this.native.push(['orderBy', name, field, direction]);
       return { limit: count => {
         this.native.push(['limit', name, count]);
@@ -42,7 +49,8 @@ class FakeFirestore {
         }
         assert.equal(reference.kind, 'query');
         this.native.push(['queryGet', reference.name]);
-        return { docs: [...snapshot].filter(([path]) => path.startsWith(`${reference.name}/`) && path.split('/').length === 2)
+        return { docs: [...snapshot].filter(([path, data]) => path.startsWith(`${reference.name}/`) && path.split('/').length === 2
+          && (!reference.filterField || data[reference.filterField] === reference.filterValue))
           .map(([path, data]) => ({ id: path.split('/')[1], stored: data }))
           .sort((a, b) => String(b.stored[reference.field] ?? '').localeCompare(String(a.stored[reference.field] ?? '')))
           .slice(0, reference.count).map(row => ({ id: row.id, data: () => clone(row.stored) })) };
@@ -124,6 +132,57 @@ test('invalid UID is rejected before constructing any Firestore operation', () =
   for (const uid of [null, undefined, 123, '', '../staff_A', '__reserved__', 'a/b', 'a'.repeat(129), 'staff A'])
     assert.throws(() => createFirestoreMealStore(db, uid), error => error instanceof AccountLinkError && error.code === 'service_unavailable');
   assert.deepEqual(db.native, []);
+});
+
+test('exemption queries return ID and raw data for the verified school email only, bounded without failing on data', async () => {
+  const own = { employeeId: '100001', email: profile.email, periods: [] };
+  const db = new FakeFirestore({
+    'meal_checkin_exemptions/100001': own,
+    'meal_checkin_exemptions/100002': { employeeId: '100002', email: 'other@hoangmaistarschool.edu.vn', periods: [] },
+  });
+  const store = createFirestoreMealStore(db, UID, 'Demo@HoangMaiStarSchool.edu.vn');
+  // Raw stored data, even when broken: strict validation and its consequences belong to the business layer.
+  assert.deepEqual(await store.runTransaction(tx => tx.list('meal_checkin_exemptions', 21)), [{ id: '100001', data: own }]);
+  assert.ok(db.native.some(call => JSON.stringify(call) === JSON.stringify(['where', 'meal_checkin_exemptions', 'email', profile.email])));
+  assert.ok(db.native.some(call => JSON.stringify(call) === JSON.stringify(['limit', 'meal_checkin_exemptions', 21])));
+  await denied(createFirestoreMealStore(db, UID).runTransaction(tx => tx.list('meal_checkin_exemptions', 21)));
+  await denied(store.runTransaction(tx => tx.get('meal_checkin_exemptions/100002')));
+  for (let i = 0; i < 30; i++) db.docs.set(`meal_checkin_exemptions/test_${i}`, { email: profile.email });
+  const rows = await store.runTransaction(tx => tx.list('meal_checkin_exemptions', 21));
+  assert.equal(rows.length, 21);
+  assert.ok(rows.every(row => Object.keys(row).join() === 'id,data' && row.data.email === profile.email));
+  for (const count of [22, 0, 1.5, '21']) {
+    const start = db.native.length;
+    await denied(store.runTransaction(tx => tx.list('meal_checkin_exemptions', count)));
+    assert.deepEqual(db.native.slice(start), [['runTransaction']]);
+  }
+});
+
+test('dispatcher snapshot survives broken or cut-off own exemption data, keeps untapped meals pending and still writes', async t => {
+  t.mock.method(Date, 'now', () => AT);
+  const base = { [SESSION_PATH]: { active: true }, 'settings/monthlyConfig': { '11': true },
+    // Synchronized at 14:00 VN: both of today's meals are final at 15:30.
+    'settings/checkinSync': { coverage: { '2026-11-03': '2026-11-03T07:00:00Z' } },
+    [`registrations/${UID}_${MONTH}`]: { userId: UID, month: MONTH, breakfastCount: 21, lunchCount: 21,
+      employeeId: profile.employeeId, firstMealDate: `${MONTH}-01`, timestamp: '2026-11-01T00:00:00Z' } };
+  const policy = { employeeId: '100001', email: profile.email, fullName: PRIVATE, periods: [{ from: '2026-11-01', to: null }] };
+  const snapshot = documents => createZaloBusinessDispatcher(fakeLinks(), new FakeFirestore({ ...base, ...documents }))
+    .run('meal.snapshot', { month: MONTH, weekId: WEEK }, 'TEST_ONLY_SESSION');
+  const today = result => [result.todayMeals.result.meals.breakfast.code, result.todayMeals.result.meals.lunch.code];
+  const valid = await snapshot({ 'meal_checkin_exemptions/100001': policy });
+  assert.deepEqual(today(valid), ['missing', 'exempt']);
+  const broken = await snapshot({ 'meal_checkin_exemptions/100001': { ...policy, periods: [] } });
+  assert.deepEqual(today(broken), ['pending', 'pending']);
+  const many = Object.fromEntries(Array.from({ length: 21 }, (_, index) => [`meal_checkin_exemptions/${100001 + index}`,
+    { ...policy, employeeId: String(100001 + index) }]));
+  assert.deepEqual(today(await snapshot(many)), ['pending', 'pending']);
+  const foreign = await snapshot({ 'meal_checkin_exemptions/100001': { ...policy, email: 'other@hoangmaistarschool.edu.vn' } });
+  assert.deepEqual(today(foreign), ['missing', 'missing']);
+  for (const result of [valid, broken, foreign]) assert.equal(JSON.stringify(result).includes(PRIVATE), false);
+  const db = new FakeFirestore({ ...base, 'meal_checkin_exemptions/100001': { ...policy, periods: [] } });
+  const cancel = { dates: ['2026-11-04'], meal: 'lunch', reason: 'Nghỉ phép', canteen: 'tieuhoc' };
+  assert.deepEqual(await createZaloBusinessDispatcher(fakeLinks(), db).run('meal.cancel', cancel, 'TEST_ONLY_SESSION'), { saved: true });
+  assert.equal(db.docs.get(`cancel_registrations/${UID}_2026-11-04`).cancelMeal, 'lunch');
 });
 
 test('collection queries are bounded to public events and survey weeks and document IDs override stored metadata', async () => {
